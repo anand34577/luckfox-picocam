@@ -35,6 +35,8 @@ partition. On SPI-NAND images the page tells you to change `rk_dma_heap_cma` in 
 
 ## AI models are chip specific
 
+See also [AI models](MODELS.md).
+
 `.rknn` files are compiled for one chip. The bundled demo models are built for **RV1103**. On an RV1106 board convert your own (or
 rebuild the demos) with `models/convert.py --platform rv1106`; loading a wrong-chip model fails with a message that says so.
 
@@ -59,3 +61,13 @@ confirmed within 60 seconds or it reverts.
 
 Worth checking on a new board: the portal opens and live view plays; System > Security shows the watchdog armed; the SD card mounts
 and survives removal; IR-cut / IR-LED GPIO numbers (Image > Day/Night) are board specific and not auto-detected.
+
+## Checking your board
+
+On the board, `sh /oem/picocam/doctor.sh` prints the detected hardware, free space, what is running and what looks wrong. The web UI shows the same
+under *System > Overview*.
+
+## Reporting a board
+
+If you try PicoCam on a board not marked as verified, please open a [Board report](https://github.com/anand34577/luckfox-picocam/issues/new?template=board-report.yml). It takes two
+minutes and tells the next person whether their board works.

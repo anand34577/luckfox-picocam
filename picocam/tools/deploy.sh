@@ -2,54 +2,77 @@
 # Install PicoCam on a Luckfox Pico board over SSH. Works on Linux, macOS, WSL and Git Bash.
 #
 #   tools/deploy.sh                       # board at 172.32.0.93 (USB cable), newest release from GitHub
-#   tools/deploy.sh -b 192.168.1.64       # board on your network (Pico Plus/Pro/Max/Ultra with Ethernet)
-#   tools/deploy.sh -p picocam-1.2.0.tar.gz --lite
+#   tools/deploy.sh -b 192.168.1.64       # board on your network
+#   tools/deploy.sh -p picocam.tar.gz     # a package you built or downloaded yourself
+#   tools/deploy.sh --lite                # no demo models (boards with little flash)
+#   tools/deploy.sh --models              # only add the ready-made demo AI models to an installed camera
 #   tools/deploy.sh --build               # compile from source first (needs Docker, see docs/BUILDING.md)
 #
-# The board's default login is root / luckfox. You are asked for the password by ssh (or set up a key first).
+# The board's default login is root / luckfox. ssh asks for the password once.
 set -e
 cd "$(dirname "$0")/.."
 BOARD=172.32.0.93
 PKG=
 LITE=0
 BUILD=0
+MODELS=0
 REPO=${PICOCAM_REPO:-anand34577/luckfox-picocam}
-usage() { sed -n '2,10p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,12p' "$0"; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-b | --board) BOARD=$2; shift 2 ;;
 	-p | --package) PKG=$2; shift 2 ;;
 	--lite) LITE=1; shift ;;
+	--models) MODELS=1; shift ;;
 	--build) BUILD=1; shift ;;
 	-h | --help) usage ;;
 	*) echo "unknown option $1"; usage 1 ;;
 	esac
 done
-V=$(tr -d '\r\n' < VERSION)
-SUFFIX=; [ $LITE = 1 ] && SUFFIX=-lite
+NAME=picocam; [ $LITE = 1 ] && NAME=picocam-lite; [ $MODELS = 1 ] && NAME=picocam-models
 
 if [ $BUILD = 1 ]; then
 	echo "== building (Docker)"
 	docker run --rm -v "$PWD/..":/work -w /work/picocam luckfox-ai:1.1 sh build.sh all
+	V=$(tr -d '\r\n' < VERSION)
+	PKG=dist/picocam-$V$([ $LITE = 1 ] && echo -lite).tar.gz
 fi
 if [ -z "$PKG" ]; then
-	PKG=dist/picocam-$V$SUFFIX.tar.gz
-	if [ ! -f "$PKG" ]; then
-		echo "== downloading picocam-$V$SUFFIX.tar.gz from github.com/$REPO"
-		mkdir -p dist
-		curl -fL --progress-bar -o "$PKG" "https://github.com/$REPO/releases/latest/download/picocam-$V$SUFFIX.tar.gz" ||
-			{ rm -f "$PKG"; echo "download failed. Build it yourself (--build) or pass a package with -p"; exit 1; }
-	fi
+	PKG=dist/$NAME.tar.gz
+	echo "== downloading $NAME.tar.gz (latest release of github.com/$REPO)"
+	mkdir -p dist
+	curl -fL --progress-bar -o "$PKG" "https://github.com/$REPO/releases/latest/download/$NAME.tar.gz" ||
+		{ rm -f "$PKG"; echo "!! download failed. Check your internet connection, or build it yourself (--build), or pass a file with -p"; exit 1; }
 fi
-[ -f "$PKG" ] || { echo "package $PKG not found"; exit 1; }
+[ -f "$PKG" ] || { echo "!! package $PKG not found"; exit 1; }
+gunzip -t "$PKG" 2>/dev/null || { echo "!! $PKG is not a valid .tar.gz (interrupted download?). Delete it and run again"; exit 1; }
 
-echo "== checking $BOARD"
-SSH="ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new root@$BOARD"
-$SSH 'echo "   connected: $(tr -d "\0" < /proc/device-tree/model)"' ||
-	{ echo "cannot reach root@$BOARD. USB cable: 172.32.0.93. Network: look up the IP in your router. Default password: luckfox"; exit 1; }
-echo "== installing $PKG"
-# the package is streamed through ssh: no scp/sftp needed (the board's ssh server may not have it)
-$SSH 'rm -rf /userdata/pcinst && mkdir -p /userdata/pcinst && gunzip -c | tar -x -C /userdata/pcinst' < "$PKG"
-$SSH 'sh /userdata/pcinst/install.sh; rc=$?; rm -rf /userdata/pcinst; exit $rc'
+# Boards often share the address 172.32.0.93 and get re-flashed, so their SSH host key changes all the time: do not let a stale
+# known_hosts entry block the installer.
+SSH=(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@$BOARD")
+REMOTE='rm -rf /userdata/pcinst && mkdir -p /userdata/pcinst && gunzip -c | tar -x -C /userdata/pcinst && sh /userdata/pcinst/install.sh; rc=$?; rm -rf /userdata/pcinst; exit $rc'
+if [ $MODELS = 1 ]; then
+	REMOTE='F=$(df -k /userdata | awk "NR>1{a=\$4} END{print a+0}"); [ "$F" -gt 16000 ] || { echo "!! only $((F/1024)) MB free in /userdata: not enough for the models (about 12 MB). Use an SD card or upload just the models you need in the web UI (AI > Models)"; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo "models installed: $(ls /userdata/picocam/models | grep -c rknn)"'
+fi
+echo "== installing $PKG on $BOARD (password: luckfox, unless you changed it)"
+# one connection: the package is streamed through ssh (no scp/sftp needed), unpacked and installed
+set +e
+"${SSH[@]}" "$REMOTE" < "$PKG"
+rc=$?
+set -e
+if [ $rc -eq 255 ]; then
+	cat <<MSG
+
+!! Could not reach or log in to root@$BOARD.
+   - Over USB the board is 172.32.0.93. Your PC needs an address in that network (172.32.0.100, mask 255.255.255.0).
+   - On a network, use the board's IP: tools/deploy.sh -b <ip>
+   - Default password is luckfox. After a PicoCam first start it is the admin password you chose.
+   See docs/TROUBLESHOOTING.md
+MSG
+	exit 1
+elif [ $rc -ne 0 ]; then
+	echo "!! The installer reported an error (exit $rc), see above. Nothing else was changed."
+	exit $rc
+fi
 echo
-echo "PicoCam $V installed. Open http://$BOARD/ and set the admin password."
+[ $MODELS = 1 ] && echo "Done. Open AI > Models in the web UI: the demo models are listed there." || echo "Done. Open http://$BOARD/ and set the admin password."

@@ -306,7 +306,11 @@ input[type='range']::-moz-range-thumb { width: 12px; height: 12px; border-radius
   .g2, .g3, .g4, .form.g2 { grid-template-columns: 1fr; }
   .span2 { grid-column: auto; }
   .page { padding: 16px 14px 50px; }
-  .topbar { padding: 10px 14px; }
+  .topbar { padding: 10px 14px; gap: 8px; }
+  /* the title must not be squeezed into a narrow column by the buttons: drop the subtitle and the user's name instead */
+  .topbar > div:not(.grow) { min-width: 0; flex: 1 1 auto; }
+  .topbar h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar .sub, .topbar .grow, .topbar .badge { display: none; }
 }
 
 /* ---------- banners and keyboard focus */

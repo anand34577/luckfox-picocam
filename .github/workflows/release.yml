@@ -1,0 +1,73 @@
+name: Release
+
+# Push a tag like v1.3.0 (it must match picocam/VERSION) and this builds the firmware and publishes the release with
+# picocam.tar.gz, picocam-lite.tar.gz, picocam-models.tar.gz, the versioned copies and SHA256SUMS.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish, e.g. v1.2.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: The tag must match the version in the tree
+        run: |
+          V="$(tr -d '\r\n' < picocam/VERSION)"
+          [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not match picocam/VERSION ($V). Bump VERSION and CHANGELOG, then tag again."; exit 1; }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: picocam-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Assemble the assets
+        run: |
+          V="${{ needs.build.outputs.version }}"
+          cd dist
+          # fixed names are what tools/deploy.* download (".../releases/latest/download/picocam.tar.gz")
+          cp "picocam-$V.tar.gz" picocam.tar.gz
+          cp "picocam-$V-lite.tar.gz" picocam-lite.tar.gz
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          V="${{ needs.build.outputs.version }}"
+          awk -v v="$V" '$0 ~ "^## " v "([ ]|$)" {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md has no '## $V' section"; exit 1; }
+          cat >> notes.md <<'EOF'
+
+          ---
+          **Install:** `picocam/tools/deploy.sh` (Linux/macOS/WSL) or `picocam\tools\deploy.ps1` (Windows). Boards with little flash: add `--lite` / `-Lite`.
+          Files: `picocam.tar.gz` (firmware + demo models), `picocam-lite.tar.gz` (no models), `picocam-models.tar.gz` (models only), `SHA256SUMS`.
+          See [the install guide](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md).
+          EOF
+
+      - name: Publish
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --title "PicoCam ${TAG#v}" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag --title "PicoCam ${TAG#v}" --notes-file notes.md
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name'

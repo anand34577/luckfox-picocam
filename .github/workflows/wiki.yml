@@ -1,0 +1,33 @@
+name: Wiki
+
+# Publishes docs/ and README.md to the GitHub Wiki. The wiki is generated: edit the files in the repository, not the wiki.
+# (The wiki must have been created once: open the Wiki tab and save any first page.)
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**', 'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', '.github/scripts/build-wiki.py']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pages
+        run: python3 .github/scripts/build-wiki.py "$RUNNER_TEMP/wiki-out"
+      - name: Publish
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git clone "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.wiki.git" "$RUNNER_TEMP/wiki" ||
+            { echo "::error::The wiki does not exist yet. Open the repository's Wiki tab, create any first page, then re-run this workflow."; exit 1; }
+          cd "$RUNNER_TEMP/wiki"
+          git rm -q -r --ignore-unmatch . >/dev/null
+          cp "$RUNNER_TEMP"/wiki-out/* .
+          git add -A
+          if git diff --cached --quiet; then echo "wiki is up to date"; exit 0; fi
+          git -c user.name="github-actions" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Update wiki from ${GITHUB_SHA::7}"
+          git push

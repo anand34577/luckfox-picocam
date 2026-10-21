@@ -92,7 +92,7 @@ export function NetworkPage() {
           <div class="form">
             <div class="form g2">
               <Field label="Camera address on USB" help="Factory default 172.32.0.93"><Input value={n.usb_ip ?? ''} onInput={(x) => net.set({ usb_ip: x })} placeholder="172.32.0.93" /></Field>
-              <Field label="Netmask"><Input value={n.usb_netmask ?? ''} onInput={(x) => net.set({ usb_netmask: x })} placeholder="255.255.255.0" /></Field>
+              <Field label="Netmask" help="Usually 255.255.255.0"><Input value={n.usb_netmask ?? ''} onInput={(x) => net.set({ usb_netmask: x })} placeholder="255.255.255.0" /></Field>
             </div>
             <Callout>The computer at the other end of the cable needs a fixed address in the same network, for example <b>{(n.usb_ip || '172.32.0.93').replace(/\.\d+$/, '.100')}</b> with netmask {n.usb_netmask || '255.255.255.0'}. After saving, reopen the page at the new address within 60 seconds and press “Keep new settings”, or the old address comes back by itself.</Callout>
           </div>

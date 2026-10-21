@@ -14,11 +14,14 @@ find dist/pkg/www -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' -o 
 rm -rf dist/pkg/models && mkdir -p dist/pkg/models dist/pkg/lib
 cp models/* dist/pkg/models/
 cp board/picocam.init dist/pkg/S95picocam
-cp board/service.sh board/ca-bundle.pem board/install.sh board/uninstall.sh dist/pkg/
-sed -i 's/\r$//' dist/pkg/S95picocam dist/pkg/service.sh dist/pkg/install.sh dist/pkg/uninstall.sh
+cp board/service.sh board/ca-bundle.pem board/install.sh board/uninstall.sh board/doctor.sh dist/pkg/
+sed -i 's/\r$//' dist/pkg/S95picocam dist/pkg/service.sh dist/pkg/install.sh dist/pkg/uninstall.sh dist/pkg/doctor.sh
 SUM=$(sha256sum dist/pkg/picocam | cut -d' ' -f1)
 printf '{"name":"picocam","version":"%s","built":"%s","arch":"armv7","sha256":{"picocam":"%s"}}\n' "$V" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SUM" > dist/pkg/manifest.json
 tar -czf "dist/picocam-$V.tar.gz" -C dist/pkg .
 tar -czf "dist/picocam-$V-lite.tar.gz" -C dist/pkg --exclude='./models/*' .
 ls -la "dist/picocam-$V.tar.gz" "dist/picocam-$V-lite.tar.gz"
 cat dist/pkg/manifest.json
+# the demo models alone (for lite installs: deploy.sh --models, or upload them in AI > Models one by one)
+tar -czf "dist/picocam-models.tar.gz" -C models .
+ls -la dist/picocam-models.tar.gz

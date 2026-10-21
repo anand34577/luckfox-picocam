@@ -8,5 +8,6 @@ Bug reports, board reports and pull requests are welcome.
   `npx tsc --noEmit` and `npm run build`.
 - **Style:** match the surrounding code (the firmware is C++17, the UI is Preact + TypeScript). Pure logic gets a check in
   `picocam/firmware/tests/selftest.cc`.
+- **Docs** live in `docs/` and `README.md`; the wiki is generated from them (do not edit the wiki directly). Keep the tone plain and the steps checkable.
 - **Never commit** real footage, plates, faces, credentials or binaries.
 - Keep the event loop non-blocking: nothing on the loop thread may block for more than about a millisecond.
