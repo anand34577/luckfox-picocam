@@ -849,13 +849,13 @@ bool start(const std::string &iq_dir, int fps) {
     rk_aiq_uapi2_sysctl_enumStaticMetasByPhyId(0, &info);
     {
         // the camera module decides the largest picture (SC3336 2304x1296, SC4336 2560x1440, SC530AI 2880x1620, ...)
-        int w = 0, h = 0, fps = 0;
+        int w = 0, h = 0, best_fps = 0;
         for (int i = 0; i < info.sensor_info.num && i < SUPPORT_FMT_MAX; ++i) {
             const rk_frame_fmt_t &f = info.sensor_info.support_fmt[i];
             if ((int64_t)f.width * f.height > (int64_t)w * h) w = f.width, h = f.height;
-            fps = std::max(fps, (int)f.fps);
+            best_fps = std::max(best_fps, (int)f.fps);
         }
-        board::set_sensor(info.sensor_info.sensor_name, w, h, fps);
+        board::set_sensor(info.sensor_info.sensor_name, w, h, best_fps);
     }
     LOGI(TAG, "sensor %s %dx%d, iq %s", info.sensor_info.sensor_name, board::info().sensor_w, board::info().sensor_h, iq_dir.c_str());
     rk_aiq_uapi2_sysctl_preInit_devBufCnt(info.sensor_info.sensor_name, "rkraw_rx", 2);

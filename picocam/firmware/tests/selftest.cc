@@ -15,6 +15,7 @@
 #include "app/faces.h"
 #include "ai/tracker.h"
 #include "core/audit.h"
+#include "core/board.h"
 #include "core/config.h"
 #include "core/util.h"
 #include "net/ipfilter.h"
@@ -36,6 +37,22 @@ static void test_hashes() {
     // key longer than the block size
     CHECK(hmac_sha256_hex(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First") ==
           "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+}
+
+static void test_board() {
+    // before the ISP has reported a sensor the defaults of the SC3336 apply; afterwards the sensor decides
+    CHECK(board::max_width("main") == 2304 && board::max_height("main") == 1296);
+    board::set_sensor("sc4336", 2560, 1440, 30);
+    CHECK(board::max_width("main") == 2560 && board::max_height("main") == 1440);
+    CHECK(board::max_width("sub") == 1920 && board::max_height("sub") == 1080);  // the sub stream never exceeds 1080p
+    board::set_sensor("sc200ai", 1920, 1080, 30);
+    CHECK(board::max_width("main") == 1920 && board::max_height("sub") == 1080);
+    board::set_sensor("small", 1280, 720, 30);
+    CHECK(board::max_width("sub") == 1280 && board::max_height("sub") == 720);
+    json o = board::cma_options();
+    CHECK(o.is_array() && o.size() >= 3 && o[0] == 24);  // every board offers at least 24/28/32 MB
+    CHECK(board::to_json().value("sensor", "") == "small");
+    CHECK(board::info().soc.size() >= 6);
 }
 
 static void test_plates() {
@@ -244,6 +261,7 @@ static void test_tls() {
 
 int main() {
     test_hashes();
+    test_board();
     test_plates();
     test_text();
     test_tracker();

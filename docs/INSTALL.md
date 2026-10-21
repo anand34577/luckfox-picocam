@@ -157,10 +157,16 @@ web UI or with `--models` ([Models](MODELS.md)). The installer also does this by
 ## Step 4: first start
 
 1. Open **`http://<board-ip>/`** in your browser (`http://172.32.0.93/` over USB). The first start takes up to a minute.
-2. **Choose the admin password.** This also becomes the board's `root` password, so the default `luckfox` stops working. (You can turn
+2. **Choose the admin password** (at least 8 characters with letters and digits).
+
+   <img src="images/ui-activate.png" width="520" alt="The first screen: choose the admin password">
+
+   This password also becomes the board's `root` password, so the default `luckfox` stops working. (You can turn
    that off in *System > Security*.)
 3. The **setup wizard** has four short steps: the camera's name and time zone, what the camera watches (this sets exposure for the
    scene), which AI template you want, and whether to record. Skip what you do not need; everything can be changed later.
+
+   <img src="images/ui-wizard.png" width="640" alt="The setup wizard">
 4. Open **Live view**. You should see your camera.
 
 Your browser will warn that HTTPS uses a self-signed certificate; that is expected on a private device. Plain `http://` works too (a

@@ -1,0 +1,29 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please check the [troubleshooting guide](https://github.com/anand34577/luckfox-picocam/blob/main/docs/TROUBLESHOOTING.md) first.
+  - type: input
+    id: board
+    attributes: {label: Board and camera module, placeholder: "Luckfox Pico Plus, SC3336"}
+    validations: {required: true}
+  - type: input
+    id: version
+    attributes: {label: PicoCam version, placeholder: "1.2.1 (System > Overview)"}
+    validations: {required: true}
+  - type: textarea
+    id: what
+    attributes: {label: What happened, description: And what you expected instead}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps to reproduce}
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `sh /oem/picocam/doctor.sh`
+      description: Run it on the board over ssh and paste everything
+      render: text
+    validations: {required: true}

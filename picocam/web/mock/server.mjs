@@ -57,7 +57,7 @@ const models = [
 
 const board = { model: 'Luckfox Pico Plus', soc: 'RV1103', ram_mb: 128, boot: 'spi-nand', flash_limited: true, ethernet: true, wifi: false, sensor: 'sc3336', sensor_width: 2304, sensor_height: 1296, sensor_fps: 30 };
 const status = () => ({
-  device: { name: config.device.name, id: config.device.id, location: config.device.location, model: board.model, soc: 'Rockchip RV1103', sensor: 'sc3336 (2304x1296)', firmware: '1.2.1', kernel: '5.10.160', mac: '3a:f1:62:0c:77:10', serial: config.device.id, board },
+  device: { name: config.device.name, id: config.device.id, location: config.device.location, model: board.model, soc: 'Rockchip RV1103', sensor: 'sc3336 (2304x1296)', firmware: '1.2.2', kernel: '5.10.160', mac: '3a:f1:62:0c:77:10', serial: config.device.id, board },
   system: { cpu_pct: 34, load: [0.62, 0.55, 0.48], mem_total_kb: 96000, mem_avail_kb: 41000, media_mem_total_kb: 24576, media_mem_used_kb: 19800, app_rss_kb: 9400, temp_c: 52.4, npu_load_pct: 18, uptime_s: 183000, app_uptime_s: 91000, time_ms: now(), ntp_synced: true },
   video: { running: true, main: { enabled: true, codec: 'h264', width: 2304, height: 1296, fps: 25, bitrate: 4096, kbps: 3870, measured_fps: 25, clients: 1 }, sub: { enabled: true, codec: 'h264', width: 960, height: 540, fps: 25, bitrate: 1024, kbps: 940, measured_fps: 25, clients: 2 }, sensor_fps: 25 },
   isp: { running: true, mode: 'smart', scene: 'normal', exposure_ms: 8.4, gain: 2.1, env_lv: 6.2, converged: true, ev_bias: 0, drc_gain: 1, anti_flicker: false, night: false, luma: { median: 118, clip_hi_pct: 0.4, clip_lo_pct: 1.2 }, shutter_cap_ms: 20, subject: false, wb: { cct: 5600, smart: false }, histogram: [2,3,5,8,11,14,17,19,21,22,20,18,16,14,13,12,11,10,9,8,7,6,5,4,3,3,2,2,1,1,1,0] },
@@ -74,12 +74,12 @@ function network() {
   return { interfaces: [{ name: 'eth0', ip: '192.168.1.64', netmask: '255.255.255.0', mac: '3a:f1:62:0c:77:10', link: true, speed_mbps: 100 }, { name: 'usb0', ip: '172.32.0.93', netmask: '255.255.255.0', mac: '3a:f1:62:0c:77:11', link: false, speed_mbps: 0 }], gateway: '192.168.1.1', dns: ['192.168.1.1', '1.1.1.1'], hostname: 'picocam', primary: 'eth0' };
 }
 const users = [{ name: 'admin', role: 'admin' }, { name: 'gate-desk', role: 'viewer' }];
-const logs = ['18:40:12 [I] ai: person #44 entered "Pedestrians at the gate"', '18:39:50 [I] events: stored 20261021-183950-d1', '18:31:02 [I] storage: new segment 18-31-02.mp4', '18:00:01 [I] system: time synced with pool.ntp.org', '17:12:44 [I] video: main h264 2304x1296@25 4096kbps | sub h264 960x540@25 1024kbps', '17:12:42 [I] main: PicoCam 1.2.1 on Luckfox Pico Plus'];
+const logs = ['18:40:12 [I] ai: person #44 entered "Pedestrians at the gate"', '18:39:50 [I] events: stored 20261021-183950-d1', '18:31:02 [I] storage: new segment 18-31-02.mp4', '18:00:01 [I] system: time synced with pool.ntp.org', '17:12:44 [I] video: main h264 2304x1296@25 4096kbps | sub h264 960x540@25 1024kbps', '17:12:42 [I] main: PicoCam 1.2.2 on Luckfox Pico Plus'];
 
 const json = (res, body, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const svg = (res, s) => { res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'no-store' }); res.end(s); };
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json' };
-let session = { activated: true, user: 'admin', role: 'admin', device: config.device.name, model: board.model, firmware: '1.2.1', ip: '192.168.1.20' };
+let session = { activated: true, user: 'admin', role: 'admin', device: config.device.name, model: board.model, firmware: '1.2.2', ip: '192.168.1.20' };
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -87,13 +87,14 @@ const server = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
-    if (!p.startsWith('/api') && p !== '/snapshot.jpg') {
+    if (!p.startsWith('/api') && p !== '/snapshot.jpg' && p !== '/__mock/session') {
       let f = normalize(join(dist, p === '/' ? 'index.html' : p));
       if (!f.startsWith(dist) || !existsSync(f) || statSync(f).isDirectory()) f = join(dist, 'index.html');
       res.writeHead(200, { 'content-type': types[extname(f)] || 'application/octet-stream' });
       return res.end(readFileSync(f));
     }
     if (p === '/snapshot.jpg' || p === '/api/snapshot.jpg') return svg(res, sceneSvg(1280, 720));
+    if (p === '/__mock/session') { try { session = { ...session, ...JSON.parse(body || '{}') }; } catch {} return json(res, session); }  // for the screenshots
     if (req.method !== 'GET') {
       if (p === '/api/login') { session = { ...session, role: 'admin' }; return json(res, session); }
       if (p === '/api/logout') { session = { ...session, role: 'none' }; return json(res, { ok: true }); }
@@ -112,7 +113,7 @@ const server = createServer((req, res) => {
     if (p === '/api/storage') return json(res, storage());
     if (p === '/api/recordings/days') return json(res, [day, '2026-10-20']);
     if (p === '/api/recordings') return json(res, [18, 17, 16].flatMap((h) => [0, 1].map((k) => ({ name: `${h}-${k ? '31' : '01'}-02.mp4`, size: 38000000 + k * 9000000, start: `${day}T${h}:${k ? '31' : '01'}:02`, duration_s: 1800 }))));
-    if (p === '/api/system/update-state') return json(res, { version: '1.2.1', pending: false, rolled_back: '', config_recovered: false, can_rollback: true, previous: '1.2.0' });
+    if (p === '/api/system/update-state') return json(res, { version: '1.2.2', pending: false, rolled_back: '', config_recovered: false, can_rollback: true, previous: '1.2.0' });
     if (p === '/api/system/media-memory') return json(res, { active_mb: 24, configured_mb: 24, used_kb: 19800, total_ram_kb: 96000, changeable: false, note: 'the boot environment cannot be edited from Linux on this board (SPI-NAND boot). Change rk_dma_heap_cma in the SDK\'s env and reflash. See docs/BOARDS.md', options: [24, 28, 32, 40] });
     if (p === '/api/system/logs') return json(res, { lines: logs });
     if (p === '/api/system/audit') return json(res, []);
