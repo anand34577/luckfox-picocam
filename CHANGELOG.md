@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.3
+
+- **Docs:** the screenshots, banner and social preview show a real street photo instead of a drawn scene, so the AI boxes and plate
+  reads look the way they do on a real camera. The photo is a Pexels stock image (credited in `NOTICE.md`), not PicoCam footage; its
+  number plates are covered with fictional ones. No firmware or web UI changes.
+
 ## 1.2.2
 
 - **Safer downloads:** the deploy scripts verify the download against the release's `SHA256SUMS`. Releases carry a build provenance
