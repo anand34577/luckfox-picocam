@@ -13,15 +13,19 @@ concurrency:
 jobs:
   scripts:
     name: Install scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Shell syntax (POSIX sh for the board, bash for the PC)
         run: |
           for f in picocam/board/*.sh picocam/board/picocam.init; do sh -n "$f"; done
           for f in picocam/tools/*.sh picocam/build.sh; do bash -n "$f"; done
+      - name: Version is consistent (VERSION, package.json, CHANGELOG)
+        run: bash .github/scripts/check-version.sh
       - name: Installer, simulated (busybox, fake board)
         run: bash picocam/tests/simulate-install.sh
+      - name: Deploy script end to end (fake ssh, fake board)
+        run: bash picocam/tests/simulate-deploy.sh
 
   build:
     name: Firmware, web UI, package

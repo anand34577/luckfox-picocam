@@ -48,6 +48,24 @@ await shot('ui-dashboard', 'dashboard');
 await shot('ui-live-light', 'live', { live: true, theme: 'light' });
 await shot('ui-live-phone', 'live', { width: 390, height: 844, live: true, scale: 2 });
 
+// first run: set the admin password, sign in, and the setup wizard
+async function special(name, session, { wizard = false, width = 1280, height = 800 } = {}) {
+  const pg = await page(width, height, 'dark');
+  await pg.evaluateOnNewDocument((w) => { try { localStorage.setItem('pc-wizard', w ? 'pending' : 'done'); } catch {} }, wizard);
+  await pg.goto(`${base}/`, { waitUntil: 'load' });
+  await pg.evaluate((b) => fetch('/__mock/session', { method: 'POST', body: JSON.stringify(b) }), session);
+  await pg.goto(`${base}/#/live`, { waitUntil: 'networkidle0' });
+  await pg.reload({ waitUntil: 'networkidle0' });  // a hash change does not reload: the app must ask for the session again
+  await new Promise((r) => setTimeout(r, 900));
+  await pg.screenshot({ path: join(out, `${name}.png`) });
+  await pg.close();
+  await fetch(`${base}/__mock/session`, { method: 'POST', body: JSON.stringify({ activated: true, role: 'admin' }) });
+  console.log('wrote', `${name}.png`);
+}
+await special('ui-activate', { activated: false, role: 'none' }, { height: 700 });
+await special('ui-login', { activated: true, role: 'none' }, { height: 700 });
+await special('ui-wizard', { activated: true, role: 'admin' }, { wizard: true });
+
 // social preview (1280x640, what GitHub shows when the repo is shared) and the README banner
 const shotUri = 'data:image/png;base64,' + readFileSync(join(out, 'ui-live.png')).toString('base64');
 const html = readFileSync(join(here, 'branding.html'), 'utf8').replace('%%SHOT%%', shotUri);

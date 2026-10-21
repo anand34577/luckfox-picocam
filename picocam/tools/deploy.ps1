@@ -50,6 +50,17 @@ if (-not $Package) {
     New-Item -ItemType Directory -Force "$root\dist" | Out-Null
     try { Invoke-WebRequest -Uri $url -OutFile $Package -UseBasicParsing }
     catch { Remove-Item $Package -ErrorAction SilentlyContinue; throw 'Download failed. Check your internet connection, or build it yourself (-Build), or pass a file with -Package.' }
+    # integrity: compare with the checksum published next to the release
+    try {
+        $sums = (Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest/download/SHA256SUMS" -UseBasicParsing).Content
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::ASCII.GetString($sums) }
+        $line = ($sums -split "`n" | Where-Object { $_ -match "\s$name\.tar\.gz\s*$" } | Select-Object -First 1)
+        if ($line) {
+            $want = ($line -split '\s+')[0].ToLower()
+            if ((Get-FileHash $Package -Algorithm SHA256).Hash.ToLower() -ne $want) { Remove-Item $Package; throw 'The download does not match the published checksum (corrupt download?). Run again.' }
+            Write-Host '   checksum ok'
+        }
+    } catch { if ($_.Exception.Message -like '*checksum*') { throw } }
 }
 if (-not (Test-Path $Package)) { throw "package not found: $Package" }
 $Package = (Resolve-Path $Package).Path
@@ -58,9 +69,13 @@ if ((Get-Item $Package).Length -lt 100000) { throw "$Package is too small to be 
 Write-Host "== installing $Package on $Board (password: luckfox, unless you changed it)"
 # One ssh connection: the package is streamed through it (no scp/sftp needed on the board), unpacked and installed.
 # Boards share the address 172.32.0.93 and get re-flashed, so a stale known_hosts entry must not block the installer.
-$remote = 'rm -rf /userdata/pcinst && mkdir -p /userdata/pcinst && gunzip -c | tar -x -C /userdata/pcinst && sh /userdata/pcinst/install.sh; rc=$?; rm -rf /userdata/pcinst; exit $rc'
+# Where to unpack on the board: /userdata if it has room (about twice the package), else RAM (/tmp), else stop with advice.
+# (No double quotes in this text: it has to survive cmd.exe quoting. deploy.sh sends the same script.)
+$need = [int]((Get-Item $Package).Length / 1024 * 2 + 1024)
+$stage = 'NEED=' + $need + '; D=/userdata/pcinst; F=$(df -k /userdata | awk ''NR>1{a=$4} END{print a+0}''); if [ $F -lt $NEED ]; then M=$(awk ''/MemAvailable/{print $2}'' /proc/meminfo); [ -z $M ] && M=0; if [ $M -gt $((NEED+16000)) ]; then D=/tmp/pcinst; else echo ''!! not enough free space to unpack the package. Use the lite package (-Lite) or free some space''; exit 3; fi; fi; rm -rf $D && mkdir -p $D && gunzip -c | tar -x -C $D'
+$remote = $stage + ' && sh $D/install.sh; rc=$?; rm -rf $D; exit $rc'
 if ($Models) {
-    $remote = 'mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo models installed'
+    $remote = 'F=$(df -k /userdata | awk ''NR>1{a=$4} END{print a+0}''); [ $F -gt 16000 ] || { echo ''!! not enough free space in /userdata for the models (about 12 MB). Use an SD card, or upload just the models you need in the web UI (AI > Models)''; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo models installed'
 }
 cmd /c "ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR root@$Board `"$remote`" < `"$Package`""
 $rc = $LASTEXITCODE

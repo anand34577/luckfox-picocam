@@ -13,6 +13,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write       # build provenance (who built these files, from which commit)
+  attestations: write
 
 jobs:
   build:
@@ -20,12 +22,12 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
 
@@ -34,7 +36,7 @@ jobs:
           V="$(tr -d '\r\n' < picocam/VERSION)"
           [ "$TAG" = "v$V" ] || { echo "::error::tag $TAG does not match picocam/VERSION ($V). Bump VERSION and CHANGELOG, then tag again."; exit 1; }
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: picocam-${{ needs.build.outputs.version }}
           path: dist
@@ -49,6 +51,11 @@ jobs:
           sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Sign the build (provenance)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.tar.gz'
+
       - name: Release notes from CHANGELOG.md
         run: |
           V="${{ needs.build.outputs.version }}"
@@ -59,6 +66,7 @@ jobs:
           ---
           **Install:** `picocam/tools/deploy.sh` (Linux/macOS/WSL) or `picocam\tools\deploy.ps1` (Windows). Boards with little flash: add `--lite` / `-Lite`.
           Files: `picocam.tar.gz` (firmware + demo models), `picocam-lite.tar.gz` (no models), `picocam-models.tar.gz` (models only), `SHA256SUMS`.
+          Verify a download: `sha256sum -c SHA256SUMS`, or `gh attestation verify picocam.tar.gz --repo ${{ github.repository }}`.
           See [the install guide](https://github.com/${{ github.repository }}/blob/main/docs/INSTALL.md).
           EOF
 

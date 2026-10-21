@@ -60,6 +60,19 @@ void persist_log_line(const std::string &line) {
     if (body == last && now_ms() - last_ms < 60000) return;
     last = body;
     last_ms = now_ms();
+    // two alternating messages defeat the check above: also cap the total (flash has a limited number of writes)
+    static int64_t window_start = 0;
+    static int in_window = 0, dropped = 0;
+    if (now_ms() - window_start > 300000) {
+        window_start = now_ms();
+        in_window = 0;
+        if (dropped) append(log_path(), format_time(wall_ms() / 1000, "%Y-%m-%d %H:%M:%S") + " [W] log: " + std::to_string(dropped) + " lines not stored (too many warnings)");
+        dropped = 0;
+    }
+    if (++in_window > 30) {
+        ++dropped;
+        return;
+    }
     append(log_path(), line);
 }
 

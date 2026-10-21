@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.2
+
+- **Safer downloads:** the deploy scripts verify the download against the release's `SHA256SUMS`. Releases carry a build provenance
+  attestation (`gh attestation verify picocam.tar.gz --repo anand34577/luckfox-picocam`).
+- **Small flash:** the deploy scripts pick where to unpack by free space (`/userdata`, else RAM, else a clear message) instead of failing
+  half way. The log kept in flash is now capped (30 lines per 5 minutes) and the known-good settings copy is only rewritten when it changed.
+- **Tested end to end on a fake board in CI:** `deploy.sh` through a fake ssh into the installer, including the low-space fallback and the
+  models-only path. `deploy.ps1` was checked against a fake ssh on Windows. Unit tests for the board detection and sensor limits.
+- **Project hygiene:** bug and feature templates, pull request checklist, Dependabot for Actions and npm, private vulnerability reporting,
+  `.editorconfig`, current Action versions, and a CI check that `VERSION`, `package.json` and this changelog agree.
+- **Docs:** screenshots of the first-run screens, and the password rule (8+ characters, letters and digits).
+
 ## 1.2.1
 
 - **Documentation rewritten for first-time users:** a step-by-step install and flashing guide (Windows, Linux, macOS notes, USB driver, SPI NAND /

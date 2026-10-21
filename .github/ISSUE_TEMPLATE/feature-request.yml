@@ -1,0 +1,11 @@
+name: Feature request
+description: An idea that would make PicoCam better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes: {label: What do you want to do, description: Describe the situation, not only the solution}
+    validations: {required: true}
+  - type: textarea
+    id: idea
+    attributes: {label: How could it work}

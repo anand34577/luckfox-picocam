@@ -80,7 +80,7 @@ supervise() {
 			sleep 120
 			kill -0 $pid 2>/dev/null && rm -f $DATA/update-pending $DATA/recovered
 			sleep 480
-			kill -0 $pid 2>/dev/null && [ -f $DATA/config.json ] && cp -f $DATA/config.json $DATA/config.json.good
+			kill -0 $pid 2>/dev/null && [ -f $DATA/config.json ] && ! cmp -s $DATA/config.json $DATA/config.json.good && cp -f $DATA/config.json $DATA/config.json.good
 		) &
 		guard=$!
 		wait $pid

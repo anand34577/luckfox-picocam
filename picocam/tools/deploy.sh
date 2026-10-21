@@ -39,10 +39,21 @@ if [ $BUILD = 1 ]; then
 fi
 if [ -z "$PKG" ]; then
 	PKG=dist/$NAME.tar.gz
+	BASEURL="https://github.com/$REPO/releases/latest/download"
 	echo "== downloading $NAME.tar.gz (latest release of github.com/$REPO)"
 	mkdir -p dist
-	curl -fL --progress-bar -o "$PKG" "https://github.com/$REPO/releases/latest/download/$NAME.tar.gz" ||
+	curl -fL --progress-bar -o "$PKG" "$BASEURL/$NAME.tar.gz" ||
 		{ rm -f "$PKG"; echo "!! download failed. Check your internet connection, or build it yourself (--build), or pass a file with -p"; exit 1; }
+	# integrity: compare with the checksum published next to the release
+	SUMS=$(curl -fsL "$BASEURL/SHA256SUMS" || true)
+	WANT=$(echo "$SUMS" | awk -v n="$NAME.tar.gz" '$2 == n {print $1}')
+	if [ -n "$WANT" ]; then
+		if command -v sha256sum >/dev/null 2>&1; then HAVE=$(sha256sum "$PKG" | cut -d' ' -f1)
+		elif command -v shasum >/dev/null 2>&1; then HAVE=$(shasum -a 256 "$PKG" | cut -d' ' -f1)
+		else HAVE=$WANT; echo "   (no sha256 tool found: checksum not verified)"; fi
+		[ "$HAVE" = "$WANT" ] || { rm -f "$PKG"; echo "!! the download does not match the published checksum (corrupt download?). Run again"; exit 1; }
+		echo "   checksum ok"
+	fi
 fi
 [ -f "$PKG" ] || { echo "!! package $PKG not found"; exit 1; }
 gunzip -t "$PKG" 2>/dev/null || { echo "!! $PKG is not a valid .tar.gz (interrupted download?). Delete it and run again"; exit 1; }
@@ -50,9 +61,14 @@ gunzip -t "$PKG" 2>/dev/null || { echo "!! $PKG is not a valid .tar.gz (interrup
 # Boards often share the address 172.32.0.93 and get re-flashed, so their SSH host key changes all the time: do not let a stale
 # known_hosts entry block the installer.
 SSH=(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@$BOARD")
-REMOTE='rm -rf /userdata/pcinst && mkdir -p /userdata/pcinst && gunzip -c | tar -x -C /userdata/pcinst && sh /userdata/pcinst/install.sh; rc=$?; rm -rf /userdata/pcinst; exit $rc'
+# Where to unpack on the board: /userdata if it has room (about twice the package), else RAM (/tmp), else stop with advice. No double
+# quotes in this script: it has to survive cmd.exe quoting on Windows too (deploy.ps1 sends the same text).
+NEED=$(( $(wc -c < "$PKG") / 1024 * 2 + 1024 ))
+STAGE="NEED=$NEED; D=/userdata/pcinst; F=\$(df -k /userdata | awk 'NR>1{a=\$4} END{print a+0}'); if [ \$F -lt \$NEED ]; then M=\$(awk '/MemAvailable/{print \$2}' /proc/meminfo); [ -z \$M ] && M=0; if [ \$M -gt \$((NEED+16000)) ]; then D=/tmp/pcinst; else echo '!! not enough free space to unpack the package. Use the lite package (--lite) or free some space'; exit 3; fi; fi; rm -rf \$D && mkdir -p \$D && gunzip -c | tar -x -C \$D"
 if [ $MODELS = 1 ]; then
-	REMOTE='F=$(df -k /userdata | awk "NR>1{a=\$4} END{print a+0}"); [ "$F" -gt 16000 ] || { echo "!! only $((F/1024)) MB free in /userdata: not enough for the models (about 12 MB). Use an SD card or upload just the models you need in the web UI (AI > Models)"; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo "models installed: $(ls /userdata/picocam/models | grep -c rknn)"'
+	REMOTE='F=$(df -k /userdata | awk '"'"'NR>1{a=$4} END{print a+0}'"'"'); [ $F -gt 16000 ] || { echo '"'"'!! not enough free space in /userdata for the models (about 12 MB). Use an SD card, or upload just the models you need in the web UI (AI > Models)'"'"'; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo models installed'
+else
+	REMOTE="$STAGE && sh \$D/install.sh; rc=\$?; rm -rf \$D; exit \$rc"
 fi
 echo "== installing $PKG on $BOARD (password: luckfox, unless you changed it)"
 # one connection: the package is streamed through ssh (no scp/sftp needed), unpacked and installed
