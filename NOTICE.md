@@ -9,6 +9,7 @@
 | Rockchip RKNN runtime `librknnmrt.so` | Rockchip licence (redistributed unmodified from `airockchip/rknn-toolkit2`) | package `lib/` |
 | Rockchip RKMPI / rkaiq libraries | provided by the Luckfox image on the board, not redistributed | |
 | Preact | MIT | web UI |
+| Photo "Tram riding along wet city street near modern cars" by Vlad Fonsark ([Pexels](https://www.pexels.com/photo/tram-riding-along-wet-city-street-near-modern-cars-4993460/)) | Pexels licence; number plates covered with fictional ones | `picocam/web/mock/street.jpg` (demo scene and screenshots only) |
 
 ## Bundled demo AI models (`picocam/models`)
 

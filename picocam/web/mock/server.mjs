@@ -21,7 +21,7 @@ config.video.main.width = 2304; config.video.main.height = 1296;
 config.recording = { ...(config.recording || {}), mode: 'events', pre_s: 5, post_s: 10 };
 config.rules = [
   { id: 'r1', name: 'Vehicle log', type: 'track', enabled: true, labels: ['car', 'truck', 'motorcycle', 'bus'], zone: [[0.05, 0.55], [0.95, 0.55], [0.95, 0.95], [0.05, 0.95]], cooldown_s: 10 },
-  { id: 'r2', name: 'Pedestrians at the gate', type: 'intrusion', enabled: true, labels: ['person'], zone: [[0.78, 0.4], [0.94, 0.4], [0.94, 0.82], [0.78, 0.82]], cooldown_s: 30 },
+  { id: 'r2', name: 'Pedestrians at the gate', type: 'intrusion', enabled: true, labels: ['person'], zone: [[0.16, 0.36], [0.36, 0.36], [0.36, 0.8], [0.16, 0.8]], cooldown_s: 30 },
 ];
 config.masks = [];
 config.ai = { ...config.ai, enabled: true, max_fps: 10, detector: { model: 'yolov5n_coco_320.rknn', conf: 0.4, nms: 0.45, classes: ['person', 'car', 'truck', 'bus', 'motorcycle'], min_box_px: 12 },
@@ -130,7 +130,7 @@ const server = createServer((req, res) => {
   });
 });
 
-// realtime: status every 2 s, a detection set that matches the generated scene
+// realtime: status every 2 s, a detection set that matches the demo scene
 const wss = new WebSocketServer({ noServer: true });
 const live = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, sock, head) => {

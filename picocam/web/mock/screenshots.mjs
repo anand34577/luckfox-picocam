@@ -21,7 +21,7 @@ async function page(width, height, theme, scale = 1) {
   await pg.evaluateOnNewDocument((t) => { try { localStorage.setItem('pc-theme', t); localStorage.setItem('pc-stream', 'sub'); } catch {} }, theme);
   return pg;
 }
-// the live picture is a stream the mock cannot send: show the generated scene in its place
+// the live picture is a stream the mock cannot send: show the demo scene in its place
 const liveStyle = '.player{background:#000 url(/snapshot.jpg) center/contain no-repeat !important}.player .msg{display:none !important}.player canvas,.player video{display:none}';
 
 async function shot(name, hash, { width = 1440, height = 900, theme = 'dark', live = false, wait = 1200, full = false, scale = 1 } = {}) {
