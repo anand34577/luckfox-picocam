@@ -7,10 +7,19 @@ updates:
     directory: /picocam/web
     schedule: {interval: monthly}
     open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']   # majors need a deliberate migration, not an automatic PR
   - package-ecosystem: npm
     directory: /web
     schedule: {interval: monthly}
     open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']   # majors need a deliberate migration, not an automatic PR
   - package-ecosystem: gomod
     directory: /server
     schedule: {interval: monthly}
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
