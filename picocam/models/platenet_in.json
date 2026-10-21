@@ -1,0 +1,7 @@
+{
+ "name": "Indian plate reader (PlateNet OCR)",
+ "task": "ocr",
+ "charset": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+ "color": "rgb",
+ "description": "Reads single and two-row Indian number plates."
+}

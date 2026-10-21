@@ -1,0 +1,9 @@
+{
+ "name": "Number plate detector (YOLO11n 320)",
+ "task": "detect",
+ "labels": [
+  "plate"
+ ],
+ "color": "rgb",
+ "description": "Finds number plates inside vehicle boxes."
+}

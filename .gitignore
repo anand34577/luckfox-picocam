@@ -1,0 +1,24 @@
+# build output
+dist/
+node_modules/
+*.tsbuildinfo
+.tmp/
+# binaries, data and logs
+*.exe
+*.db
+*.db-shm
+*.db-wal
+*.log
+server/edgeai-server
+server/data/
+server/mediamtx/
+# real-world footage (plates, people, a real site) is never published; see docs/BUILDING.md for how to make your own calibration set
+samples/
+models/calib/*.jpg
+# superseded prototype, kept locally only (its code lives on in picocam/firmware/src/ai)
+edge/
+# local tooling
+Claude-Account-1.cmd
+Claude-2.cmd
+.claude/
+picocam/AUDIT.md

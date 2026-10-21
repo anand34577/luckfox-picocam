@@ -1,0 +1,6 @@
+{
+ "name": "Face embedding (MobileFaceNet)",
+ "task": "face_embed",
+ "color": "bgr",
+ "description": "128-d face features for recognition on a server."
+}

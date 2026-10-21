@@ -1,0 +1,5 @@
+#!/bin/sh
+# PicoCam boot stub (installed as /etc/init.d/S95picocam). The real logic lives in /oem/picocam/service.sh so that a
+# firmware update can change it.
+[ -f /oem/picocam/service.sh ] || exit 0
+exec sh /oem/picocam/service.sh "$@"

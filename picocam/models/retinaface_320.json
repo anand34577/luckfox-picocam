@@ -1,0 +1,9 @@
+{
+ "name": "Face detector (RetinaFace 320)",
+ "task": "face_detect",
+ "labels": [
+  "face"
+ ],
+ "color": "bgr",
+ "description": "Faces with 5 landmarks."
+}

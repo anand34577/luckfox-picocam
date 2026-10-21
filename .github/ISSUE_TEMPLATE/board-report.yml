@@ -1,0 +1,34 @@
+name: Board report
+description: Tell us how PicoCam runs on your Luckfox board
+labels: [board]
+body:
+  - type: input
+    id: board
+    attributes:
+      label: Board and camera module
+      placeholder: Luckfox Pico Plus, SC3336
+    validations:
+      required: true
+  - type: textarea
+    id: detected
+    attributes:
+      label: Detected hardware
+      description: The device.board block of GET /api/status (or System > Device)
+      render: json
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works
+        - Works with problems
+        - Does not work
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Flash type, SD card, what failed; paste /tmp/picocam.log if relevant
