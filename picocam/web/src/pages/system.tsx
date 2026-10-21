@@ -32,6 +32,7 @@ function Overview() {
             <dt>Model</dt><dd>{d.model}</dd>
             <dt>SoC</dt><dd>{d.soc}</dd>
             <dt>Sensor</dt><dd>{d.sensor}</dd>
+            {d.board && <><dt>Memory</dt><dd>{d.board.ram_mb} MB</dd><dt>Boot from</dt><dd>{({ 'spi-nand': 'SPI NAND flash', emmc: 'eMMC', sd: 'SD card' } as any)[d.board.boot] || 'unknown'}{d.board.flash_limited && <> <Badge>protected: low write wear</Badge></>}</dd></>}
             <dt>Firmware</dt><dd>PicoCam {d.firmware}</dd>
             <dt>Kernel</dt><dd>{d.kernel}</dd>
             <dt>Serial / ID</dt><dd class="mono">{d.id}</dd>

@@ -1,0 +1,117 @@
+name: Build
+
+# Reusable: compiles the firmware with the Luckfox cross toolchain, builds the web UI, runs the tests and packages everything.
+# Called by ci.yml (every push / pull request) and release.yml (tags). Needs no Docker image: the SDK pieces are fetched at the
+# pinned revisions below and cached.
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Version from picocam/VERSION
+        value: ${{ jobs.build.outputs.version }}
+
+env:
+  # Pinned so that a build today and a build in a year use the same compiler, headers and runtime.
+  LUCKFOX_SDK_SHA: 824b817f889c2cbff1d48fcdb18ab494a68f69d1      # LuckfoxTECH/luckfox-pico (uClibc cross compiler)
+  RKMPI_SHA: 55178250c05542b156ac94c8c08cecef46589abf              # LuckfoxTECH/luckfox_pico_rkmpi_example (MPI, ISP, OpenCV headers + libs)
+  RKNN_SHA: 2c723177a94fac65cbc036d722907ddbc91980cf               # airockchip/rknn-toolkit2 (NPU runtime)
+  RKNN_LIB_SHA256: 632d0e505ca9c9d3da7037107a7cbc6a593b9b36007cdce600377c529484947e
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: ver
+        run: echo "version=$(tr -d '\r\n' < picocam/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK pieces
+        id: sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/sdk
+          key: sdk-${{ env.LUCKFOX_SDK_SHA }}-${{ env.RKMPI_SHA }}-${{ env.RKNN_SHA }}
+
+      - name: Fetch the SDK pieces
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p ~/sdk && cd ~/sdk
+          fetch() {  # fetch <repo> <sha> <dir> [sparse path]
+            git init -q "$3" && cd "$3"
+            git remote add origin "https://github.com/$1.git"
+            [ -n "$4" ] && git sparse-checkout set "$4"
+            git fetch -q --depth 1 --filter=blob:none origin "$2"
+            git checkout -q FETCH_HEAD
+            cd ..
+          }
+          fetch LuckfoxTECH/luckfox-pico "$LUCKFOX_SDK_SHA" sdk-src tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf
+          mv sdk-src/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf toolchain
+          rm -rf sdk-src
+          fetch LuckfoxTECH/luckfox_pico_rkmpi_example "$RKMPI_SHA" rkmpi
+          rm -rf rkmpi/.git rkmpi/install rkmpi/images rkmpi/lib/glibc
+          mkdir -p rknpu2/include rknpu2/armhf-uclibc
+          RAW="https://raw.githubusercontent.com/airockchip/rknn-toolkit2/$RKNN_SHA"
+          for f in rknn_api.h rknn_custom_op.h rknn_matmul_api.h; do
+            curl -fsSL -o "rknpu2/include/$f" "$RAW/rknpu2/runtime/Linux/librknn_api/include/$f"
+          done
+          curl -fsSL -o rknpu2/armhf-uclibc/librknnmrt.so "$RAW/rknpu2/runtime/Linux/librknn_api/armhf-uclibc/librknnmrt.so"
+
+      - name: Check the NPU runtime library
+        run: echo "$RKNN_LIB_SHA256  $HOME/sdk/rknpu2/armhf-uclibc/librknnmrt.so" | sha256sum -c -
+
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake make
+
+      - name: Firmware tests (host build)
+        working-directory: picocam/firmware
+        run: RKNPU2_DIR="$HOME/sdk/rknpu2" sh tests/run.sh
+
+      - name: Firmware (cross-compile for the board)
+        working-directory: picocam
+        run: |
+          export LUCKFOX_TOOLCHAIN="$HOME/sdk/toolchain" RKMPI_DIR="$HOME/sdk/rkmpi" RKNPU2_DIR="$HOME/sdk/rknpu2"
+          export BUILD_DIR="$RUNNER_TEMP/picocam-build" VERSION="${{ steps.ver.outputs.version }}"
+          sh build.sh firmware
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: picocam/web/package-lock.json
+
+      - name: Web UI
+        working-directory: picocam/web
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+          npm run build
+
+      - name: Package
+        working-directory: picocam
+        run: bash tools/package.sh
+
+      - name: Check the package
+        working-directory: picocam
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          for f in "dist/picocam-$V.tar.gz" "dist/picocam-$V-lite.tar.gz" dist/picocam-models.tar.gz; do gunzip -t "$f"; done
+          tar -tzf "dist/picocam-$V.tar.gz" | grep -q '^./picocam$'
+          tar -tzf "dist/picocam-$V.tar.gz" | grep -q '^./install.sh$'
+          tar -tzf "dist/picocam-$V.tar.gz" | grep -q '^./www/index.html$'
+          tar -tzf "dist/picocam-$V.tar.gz" | grep -q 'models/.*\.rknn'
+          ! tar -tzf "dist/picocam-$V-lite.tar.gz" | grep -q '\.rknn'
+          # an ARM 32-bit ELF, not a build for the CI machine
+          tar -xzOf "dist/picocam-$V.tar.gz" ./picocam | head -c 20 | od -An -tx1 | tr -d ' \n' | grep -q '^7f454c46010101.*2800$'
+          ls -l dist/*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: picocam-${{ steps.ver.outputs.version }}
+          path: |
+            picocam/dist/picocam-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.1
+
+- **Documentation rewritten for first-time users:** a step-by-step install and flashing guide (Windows, Linux, macOS notes, USB driver, SPI NAND /
+  eMMC / SD), a user guide with pictures of every page, an FAQ, a troubleshooting guide, and pages on connecting other software, AI models and
+  boards. The same pages are published to the project wiki.
+- **Releases are built by GitHub Actions.** Pushing a version tag builds the firmware and web UI from source at pinned SDK revisions, runs the
+  tests and publishes `picocam.tar.gz`, `picocam-lite.tar.gz`, `picocam-models.tar.gz` and `SHA256SUMS`.
+- **Easier install:** the deploy scripts need one password prompt, ignore stale SSH host keys, check the download, and explain every failure in
+  plain words. `deploy.sh --models` / `deploy.ps1 -Models` add the ready-made AI models to a lite install.
+- **`doctor.sh` on the board:** a self-check that names the likely cause of a problem, plus `reset-password` and `factory-reset` recovery commands.
+- **Installer fixes** found by simulating it on a fake board: installing the lite package no longer fails; the patched vendor launcher is
+  syntax-checked before it replaces the original; the Ubuntu image is refused with an explanation; a missing device-tree file no longer aborts it.
+- **UI:** the phone header no longer squeezes the page title; System > Overview shows memory and boot flash; a demo mode (`npm run mock`) shows the
+  web UI without a board.
+- Demo screenshots, banner and social preview are generated from made-up data; no real footage is in the repository.
+
 ## 1.2.0
 
 - **Boards:** run-time detection of chip, RAM, boot flash, Ethernet/Wi-Fi and camera module; one package for the whole Pico family

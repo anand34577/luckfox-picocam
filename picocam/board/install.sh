@@ -19,6 +19,8 @@ for a in "$@"; do
 	esac
 done
 
+ls "$SRC"/models/* >/dev/null 2>&1 || WITH_MODELS=0   # the lite package has none
+
 say() { echo "== $*"; }
 die() { echo "!! $*" >&2; exit 1; }
 free_kb() { df -k "$1" 2>/dev/null | awk 'NR>1 {a=$4} END {print a+0}'; }
@@ -32,10 +34,13 @@ case "$(uname -m)" in
 armv7* | arm) ;;
 *) die "this package is for the 32-bit ARM Luckfox boards (uname says $(uname -m)). Run it on the board, not on your PC" ;;
 esac
-[ -d /oem ] || die "/oem not found: this does not look like a Luckfox buildroot image"
+if grep -qi ubuntu /etc/os-release 2>/dev/null; then
+	die "this is the Ubuntu image. PicoCam needs the Luckfox Buildroot image (the one with the camera demo, rkipc). Flash that image first: docs/INSTALL.md, step 1"
+fi
+[ -d /oem ] || die "/oem not found: this does not look like a Luckfox Buildroot image. Flash the Buildroot image first: docs/INSTALL.md, step 1"
 [ -d /userdata ] || die "/userdata not found: this does not look like a Luckfox buildroot image"
 touch /oem/.pc_rw 2>/dev/null && rm -f /oem/.pc_rw || die "/oem is read-only. Remount it read-write (mount -o remount,rw /oem) and retry"
-MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
 RAM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 BOOT=$(sed -n 's/.*storagemedia=\([a-z_]*\).*/\1/p' /proc/cmdline)
 grep -q '"' /proc/mtd 2>/dev/null && [ -z "$BOOT" ] && BOOT=spi-nand
@@ -44,7 +49,7 @@ echo "   board: ${MODEL:-unknown}   usable RAM: $((RAM_KB / 1024)) MB   boot med
 
 # ---- 2. is there room? (flash partitions on SPI NAND boards are small)
 /etc/init.d/S95picocam stop 2>/dev/null || true
-CORE_KB=$(size_kb "$SRC/picocam" "$SRC/lib" "$SRC/www" "$SRC/service.sh" "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/ca-bundle.pem")
+CORE_KB=$(size_kb "$SRC/picocam" "$SRC/lib" "$SRC/www" "$SRC/service.sh" "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/doctor.sh" "$SRC/ca-bundle.pem")
 MODELS_KB=$(size_kb "$SRC/models")
 OLD_KB=$(size_kb $DIR)
 FREE_KB=$(free_kb /oem)
@@ -77,7 +82,7 @@ if [ "$WITH_MODELS" = 1 ]; then
 else
 	mkdir -p $DIR/models
 fi
-cp -f "$SRC/manifest.json" "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/service.sh" $DIR/
+cp -f "$SRC/manifest.json" "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/service.sh" "$SRC/doctor.sh" $DIR/
 [ -f "$SRC/ca-bundle.pem" ] && cp -f "$SRC/ca-bundle.pem" $DIR/
 tr -d '\r' < "$DIR/service.sh" > "$DIR/service.sh.tmp" && mv -f "$DIR/service.sh.tmp" "$DIR/service.sh"
 
@@ -99,12 +104,12 @@ if [ -f $LAUNCH ]; then
 	if ! grep -q "picocam/enabled" $LAUNCH; then
 		awk -v start="$INIT_OK" '/if \[ -d "\/oem\/usr\/share\/iqfiles" \]; then/ && !done {
 			print "\tif [ -f /oem/picocam/enabled ]; then"
-			print "\t\t# PicoCam runs the camera"
+			print "		: # PicoCam runs the camera"
 			if (start != 1) print "\t\tsh /oem/picocam/service.sh start"
 			sub(/if/, "elif"); print; done=1; next }
 			{ print }' $LAUNCH.orig > $LAUNCH.new
 		sed -i 's#gdb -batch -x /oem/usr/share/rkipc-ae-fix.gdb --args ##' $LAUNCH.new
-		if grep -q "picocam/enabled" $LAUNCH.new; then
+		if grep -q "picocam/enabled" $LAUNCH.new && sh -n $LAUNCH.new; then
 			chmod +x $LAUNCH.new && mv -f $LAUNCH.new $LAUNCH
 		else
 			rm -f $LAUNCH.new
@@ -137,4 +142,4 @@ for i in eth0 usb0 wlan0; do
 	ip=$(ifconfig $i 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
 	[ -n "$ip" ] && echo "     http://$ip/    ($i)"
 done
-echo "== to go back to the stock app: sh $DIR/uninstall.sh && reboot"
+echo "== something odd?  sh $DIR/doctor.sh      back to the stock app:  sh $DIR/uninstall.sh && reboot"
