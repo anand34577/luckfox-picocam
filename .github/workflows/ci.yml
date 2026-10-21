@@ -27,6 +27,24 @@ jobs:
       - name: Deploy script end to end (fake ssh, fake board)
         run: bash picocam/tests/simulate-deploy.sh
 
+  dashboard:
+    name: EdgeAI dashboard and server (optional parts)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund && npm run build
+        working-directory: web
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+      - run: go vet ./... && go build -o /dev/null ./...
+        working-directory: server
+
   build:
     name: Firmware, web UI, package
     uses: ./.github/workflows/build.yml
