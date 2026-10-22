@@ -12,6 +12,7 @@
 #include "ai/detectors.h"
 #include "ai/geom.h"
 #include "ai/textvote.h"
+#include "app/auth.h"
 #include "app/faces.h"
 #include "ai/tracker.h"
 #include "core/audit.h"
@@ -259,6 +260,27 @@ static void test_tls() {
     CHECK(!tls::install("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", "x").empty());
 }
 
+// Sessions must not depend on the wall clock: the board sets it from the browser right after login.
+static void test_sessions() {
+    g_paths.data = "/tmp/picocam-selftest-auth";
+    auth::load();
+    if (!auth::activated()) CHECK(auth::activate("secret123").empty());
+    std::string tok = auth::create_session("admin", auth::ADMIN, "10.0.0.2");
+    std::string user;
+    CHECK(auth::check_session(tok, &user) == auth::ADMIN && user == "admin");
+    CHECK(auth::check_session(tok + "x") == auth::NONE);
+    json l = auth::list_sessions(tok);
+    CHECK(l.size() >= 1);
+    int64_t w = wall_ms();
+    for (auto &s : l)
+        if (s["current"].get<bool>()) {
+            CHECK(s["expires"].get<int64_t>() > w + 11 * 3600 * 1000LL && s["expires"].get<int64_t>() < w + 13 * 3600 * 1000LL);
+            CHECK(s["created"].get<int64_t>() <= w && s["created"].get<int64_t>() > w - 60000);
+        }
+    auth::drop_session(tok);
+    CHECK(auth::check_session(tok) == auth::NONE);
+}
+
 int main() {
     test_hashes();
     test_board();
@@ -269,6 +291,7 @@ int main() {
     test_faces();
     test_ipfilter();
     test_tls();
+    test_sessions();
     printf(g_fail ? "%d check(s) FAILED\n" : "all checks passed\n", g_fail);
     return g_fail ? 1 : 0;
 }
