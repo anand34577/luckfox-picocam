@@ -51,6 +51,7 @@ static std::thread g_th_venc[2], g_th_sub, g_th_osd;
 static std::mutex g_jpeg_mu;
 static int g_jpeg_quality = 80;
 
+static std::atomic<float> g_cap_isp_ms{0}, g_cap_hooks_ms{0}, g_cap_total_ms{0};  // capture thread, per sub frame
 static std::mutex g_hook_mu;
 static std::map<int, FrameHook> g_hooks;
 static int g_hook_next = 1;
@@ -416,6 +417,7 @@ static void venc_loop(int ch) {
 static void sub_loop() {
     prctl(PR_SET_NAME, "vi-sub", 0, 0, 0);
     VIDEO_FRAME_INFO_S f;
+    int n = 0;
     while (g_run) {
         if (RK_MPI_VI_GetChnFrame(kPipe, kChSub, &f, 500) != RK_SUCCESS) continue;
         MB_BLK blk = f.stVFrame.pMbBlk;
@@ -428,14 +430,25 @@ static void sub_loop() {
         v.fd = RK_MPI_MB_Handle2Fd(blk);
         RK_MPI_SYS_MmzFlushCache(blk, RK_TRUE);  // CPU reads (invalidate)
         bool dirty = false;
+        int64_t t0 = now_us();
         isp::feed_frame(v.nv12, v.w, v.h, v.stride);
+        int64_t t1 = now_us();
         {
             std::lock_guard<std::mutex> lk(g_hook_mu);
             for (auto &h : g_hooks) dirty |= h.second(v);
         }
+        int64_t t2 = now_us();
         if (dirty) RK_MPI_SYS_MmzFlushCache(blk, RK_FALSE);  // CPU writes (clean) before the encoder reads
         if (g_sub.enabled) RK_MPI_VENC_SendFrame(kChSub, &f, 200);
         RK_MPI_VI_ReleaseChnFrame(kPipe, kChSub, &f);
+        // where the capture thread's time goes (shown in the video status)
+        auto avg = [](std::atomic<float> &a, int64_t us) { a = a.load() ? a.load() * 0.95f + us / 1000.f * 0.05f : us / 1000.f; };
+        avg(g_cap_isp_ms, t1 - t0);
+        avg(g_cap_hooks_ms, t2 - t1);
+        avg(g_cap_total_ms, now_us() - t0);
+        if (++n == 450)
+            LOGI(TAG, "capture thread per frame: exposure stats %.2f ms, hooks %.2f ms, total %.2f ms", g_cap_isp_ms.load(),
+                 g_cap_hooks_ms.load(), g_cap_total_ms.load());
     }
 }
 
@@ -846,7 +859,9 @@ json status() {
     json sub = s(g_sub_stream, g_sub);
     // the boxes are in the picture itself: viewers of the sub stream must not draw their own on top
     sub["ai_overlay"] = jget<bool>(g_settings.get("video").value("sub", json::object()), "ai_overlay", false);
-    return {{"running", g_run.load()}, {"main", s(g_main_stream, g_main)}, {"sub", sub}, {"sensor_fps", g_sensor_fps}};
+    auto r2 = [](float v) { return std::round(v * 100.0) / 100.0; };
+    return {{"running", g_run.load()}, {"main", s(g_main_stream, g_main)}, {"sub", sub}, {"sensor_fps", g_sensor_fps},
+            {"capture", {{"exposure_stats_ms", r2(g_cap_isp_ms)}, {"hooks_ms", r2(g_cap_hooks_ms)}, {"frame_ms", r2(g_cap_total_ms)}}}};
 }
 
 }  // namespace video

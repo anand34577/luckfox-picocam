@@ -302,6 +302,7 @@ function PipelineTab() {
               {aiSt?.npu && (aiSt.npu.inference_ms > 0 || aiSt.npu.preprocess_ms > 0) && (
                 <><dt>Per model run</dt><dd title={aiSt.npu.note || 'Preparing the picture for the model (RGA = 2D hardware, no CPU time) and running it on the NPU'}>
                   {aiSt.npu.preprocess_ms} ms prepare ({aiSt.npu.preprocess}) · {aiSt.npu.inference_ms} ms NPU
+                  {aiSt.npu.frame_copy && <> · frame copy {aiSt.npu.frame_copy}{aiSt.npu.frame_copy === 'rga' && aiSt.npu.frame_copy_ms > 0 ? ` (${aiSt.npu.frame_copy_ms} ms)` : ''}</>}
                 </dd></>
               )}
               <dt>Tracked now</dt><dd>{aiSt?.tracks ?? 0}</dd>

@@ -7,7 +7,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <initializer_list>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -27,7 +29,7 @@ static const char *TAG = "system";
 static std::atomic<bool> g_run{false};
 static std::thread g_th;
 static std::mutex g_mu;
-static float g_cpu = 0;
+static float g_cpu = 0, g_cpu_user = 0, g_cpu_sys = 0, g_app_cpu = 0;  // % of the CPU over the last 2 s
 static int64_t g_start_ms = now_ms();
 static std::atomic<int64_t> g_ntp_ok_ms{0};
 static std::atomic<bool> g_ntp_now{false};
@@ -38,14 +40,30 @@ std::string board_model() { return board::info().model; }
 
 // ---------------------------------------------------------------- stats
 
-static bool read_cpu(uint64_t &idle, uint64_t &total) {
+struct CpuTimes {
+    uint64_t idle = 0, total = 0, user = 0, sys = 0, app = 0;
+};
+
+static bool read_cpu(CpuTimes &c) {
     std::string s;
     if (!read_file("/proc/stat", s)) return false;
-    unsigned long long u, n, sy, id, io, irq, sirq, st;
+    unsigned long long u, n, sy, id, io = 0, irq = 0, sirq = 0, st = 0;
     if (sscanf(s.c_str(), "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &u, &n, &sy, &id, &io, &irq, &sirq, &st) < 4)
         return false;
-    idle = id + io;
-    total = u + n + sy + id + io + irq + sirq + st;
+    c.idle = id + io;
+    c.total = u + n + sy + id + io + irq + sirq + st;
+    c.user = u + n;
+    c.sys = sy + irq + sirq;
+    // this process (all threads): utime + stime, fields 14 and 15, counted after the ")" that ends the name
+    std::string ps;
+    c.app = 0;
+    if (read_file("/proc/self/stat", ps)) {
+        size_t e = ps.rfind(')');
+        unsigned long long ut = 0, stt = 0;
+        if (e != std::string::npos &&
+            sscanf(ps.c_str() + e + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &stt) == 2)
+            c.app = ut + stt;
+    }
     return true;
 }
 
@@ -71,13 +89,29 @@ json stats() {
         size_t p = rss.find("VmRSS:");
         if (p != std::string::npos) rss_kb = atol(rss.c_str() + p + 6);
     }
-    std::string npu;
-    read_file("/sys/kernel/debug/rknpu/load", npu);
-    int npu_load = -1;
-    size_t p = npu.find("Core0:");
-    if (p != std::string::npos) npu_load = atoi(npu.c_str() + p + 6);
+    // hardware engine load from the vendor drivers: "NPU load: 16%" (procfs; debugfs is not mounted on these boards)
+    // and the RGA's "load = 1%". Never read /proc/rknpu/volt: the driver dereferences a missing regulator (kernel oops).
+    auto pct_after = [](const char *path, std::initializer_list<const char *> keys) {
+        std::string t;
+        if (!read_file(path, t)) return -1;
+        for (const char *k : keys) {
+            size_t at = t.find(k);
+            if (at != std::string::npos) return atoi(t.c_str() + at + strlen(k));
+        }
+        return -1;
+    };
+    int npu_load = pct_after("/proc/rknpu/load", {"NPU load:", "Core0:"});
+    if (npu_load < 0) npu_load = pct_after("/sys/kernel/debug/rknpu/load", {"NPU load:", "Core0:"});
+    int rga_load = pct_after("/proc/rkrga/load", {"load = "});
+    std::string f;
+    int cpu_mhz = read_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", f) ? atoi(f.c_str()) / 1000 : -1;
     std::lock_guard<std::mutex> lk(g_mu);
     return {{"cpu_pct", std::round(g_cpu)},
+            {"cpu_user_pct", std::round(g_cpu_user)},
+            {"cpu_sys_pct", std::round(g_cpu_sys)},
+            {"app_cpu_pct", std::round(g_app_cpu * 10.0) / 10.0},
+            {"cpu_mhz", cpu_mhz},
+            {"rga_load_pct", rga_load},
             {"load", {l1, l5, l15}},
             {"mem_total_kb", total},
             {"mem_avail_kb", avail},
@@ -335,18 +369,21 @@ static void ntp_loop() {
 
 static void loop() {
     int usb_tick = 0;
-    uint64_t pidle = 0, ptotal = 0;
-    read_cpu(pidle, ptotal);
+    CpuTimes prev;
+    read_cpu(prev);
     while (g_run) {
         for (int i = 0; i < 20 && g_run; ++i) usleep(100 * 1000);
         // the vendor scripts may bring usb0 up after us: keep the configured address (not while a change awaits confirmation)
         if (++usb_tick % 5 == 0 && !network_pending_s()) apply_usb(g_settings.get("network"));
-        uint64_t idle, total;
-        if (read_cpu(idle, total) && total > ptotal) {
+        CpuTimes c;
+        if (read_cpu(c) && c.total > prev.total) {
+            float dt = (float)(c.total - prev.total);
             std::lock_guard<std::mutex> lk(g_mu);
-            g_cpu = 100.f * (1.f - (float)(idle - pidle) / (float)(total - ptotal));
-            pidle = idle;
-            ptotal = total;
+            g_cpu = std::max(0.f, std::min(100.f, 100.f * (1.f - (float)(c.idle - prev.idle) / dt)));
+            g_cpu_user = 100.f * (float)(c.user - prev.user) / dt;
+            g_cpu_sys = 100.f * (float)(c.sys - prev.sys) / dt;
+            g_app_cpu = c.app >= prev.app ? std::min(100.f, 100.f * (float)(c.app - prev.app) / dt) : 0.f;
+            prev = c;
         }
     }
 }
