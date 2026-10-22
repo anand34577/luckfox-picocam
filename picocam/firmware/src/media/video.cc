@@ -42,6 +42,7 @@ struct StreamCfg {
 
 static std::mutex g_mu;  // start/stop/restart
 static std::atomic<int64_t> g_trans_since{0};  // a start/stop is in progress since (monotonic ms)
+static std::atomic<int64_t> g_fail_since{0};   // the last start failed: no video since (monotonic ms)
 static std::atomic<bool> g_run{false};
 static bool g_sys_init = false;
 static StreamCfg g_main, g_sub;
@@ -426,7 +427,7 @@ static void sub_loop() {
         v.pts_us = (int64_t)f.stVFrame.u64PTS;
         RK_MPI_SYS_MmzFlushCache(blk, RK_TRUE);  // CPU reads (invalidate)
         bool dirty = false;
-        isp::feed_luma(v.nv12, v.w, v.h, v.stride);
+        isp::feed_frame(v.nv12, v.w, v.h, v.stride);
         {
             std::lock_guard<std::mutex> lk(g_hook_mu);
             for (auto &h : g_hooks) dirty |= h.second(v);
@@ -581,11 +582,13 @@ static void osd_refresh(bool force) {
     }
     json tcfg = o.value("time", json::object()), ncfg = o.value("name", json::object());
     std::string size = jget<std::string>(o, "size", "medium");
-    std::string now = jget<bool>(tcfg, "enabled", true)
+    bool master = jget<bool>(o, "enabled", true);  // one switch for everything drawn on the picture
+    std::string now = master && jget<bool>(tcfg, "enabled", true)
                           ? format_time(time(nullptr), jget<std::string>(tcfg, "format", "%Y-%m-%d %H:%M:%S").c_str())
                           : "";
-    std::string name = jget<bool>(ncfg, "enabled", true) ? jget<std::string>(ncfg, "text", "") : "";
-    if (name.empty() && jget<bool>(ncfg, "enabled", true)) name = g_settings.get("device").value("name", "");
+    bool name_on = master && jget<bool>(ncfg, "enabled", true);
+    std::string name = name_on ? jget<std::string>(ncfg, "text", "") : "";
+    if (name.empty() && name_on) name = g_settings.get("device").value("name", "");
     const StreamCfg *s[2] = {&g_main, &g_sub};
     int venc[2] = {kChMain, kChSub};
     for (int i = 0; i < 2; ++i) {
@@ -718,6 +721,10 @@ static void teardown() {
     g_mask_count = 0;
     RK_MPI_VI_DisableChn(kPipe, kChSub);
     RK_MPI_VI_DisableChn(kPipe, kChMain);
+    // Rockchip order: the 3A engine stops after the VI streams and starts before them. Re-enabling the streams
+    // under a running AIQ leaves the ISP without its white-balance gains (green picture) and the AE frozen
+    // until a reboot.
+    isp::stop();
 }
 
 struct Transition {
@@ -725,7 +732,7 @@ struct Transition {
     ~Transition() { g_trans_since = 0; }
 };
 
-bool start(const json &v, const json &osd, const json &masks) {
+static bool start_impl(const json &v, const json &osd, const json &masks) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_run) return true;
     Transition tr;
@@ -738,6 +745,13 @@ bool start(const json &v, const json &osd, const json &masks) {
 
     sys_init();
     if (!g_sys_init) return false;
+    // same IQ files; picks up a changed sensor frame rate. Right after a stop the ISP device can still be busy.
+    bool isp_ok = false;
+    for (int i = 0; i < 3 && !(isp_ok = isp::start("", g_sensor_fps)); ++i) usleep(400 * 1000);
+    if (!isp_ok) {
+        LOGE(TAG, "ISP did not start");
+        return false;
+    }
     long cma0 = meminfo_kb("CmaAllocated");
     // main path always runs (the ISP's main output); the encoder is skipped when the stream is disabled
     if (!vi_chn_init(kChMain, g_main, 2, 0, true)) {
@@ -782,6 +796,14 @@ bool start(const json &v, const json &osd, const json &masks) {
     return true;
 }
 
+bool start(const json &v, const json &osd, const json &masks) {
+    bool ok = start_impl(v, osd, masks);
+    // a failed start is a stall too: the watchdog resets the board if nothing brings the video back
+    if (ok) g_fail_since = 0;
+    else if (!g_fail_since) g_fail_since = now_ms();
+    return ok;
+}
+
 void stop() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_run) return;
@@ -799,6 +821,8 @@ bool running() { return g_run; }
 int64_t stalled_ms() {
     int64_t since = g_trans_since;
     if (since) return now_ms() - since;
+    int64_t failed = g_fail_since;
+    if (failed) return now_ms() - failed;
     if (!g_run) return 0;
     // the sub path always runs; the main path only when enabled
     int64_t idle = g_sub.enabled ? g_sub_stream.idle_ms() : 0;
@@ -813,8 +837,10 @@ json status() {
                     {"kbps", std::round(st.kbps())}, {"measured_fps", std::round(st.measured_fps() * 10.0) / 10.0},
                     {"clients", st.subscribers()}};
     };
-    return {{"running", g_run.load()}, {"main", s(g_main_stream, g_main)}, {"sub", s(g_sub_stream, g_sub)},
-            {"sensor_fps", g_sensor_fps}};
+    json sub = s(g_sub_stream, g_sub);
+    // the boxes are in the picture itself: viewers of the sub stream must not draw their own on top
+    sub["ai_overlay"] = jget<bool>(g_settings.get("video").value("sub", json::object()), "ai_overlay", false);
+    return {{"running", g_run.load()}, {"main", s(g_main_stream, g_main)}, {"sub", sub}, {"sensor_fps", g_sensor_fps}};
 }
 
 }  // namespace video

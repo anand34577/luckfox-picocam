@@ -18,11 +18,17 @@
 //     does not hunt around a threshold; night scenes with lamps are told apart from daytime backlight,
 //   - the shutter can be capped from the speed of the tracked objects, so plates are not blurred (motion shutter),
 //   - day/night switching is automatic (gray mode, optional IR-cut and IR-LED GPIOs).
+//
+// A health monitor watches for the two ways the ISP fails without the video stopping: a green picture (the
+// white-balance gains are not reaching the ISP) and a frozen AE (exposure stuck while the AE itself says it is not
+// converged). Either one, held long enough, asks for a pipeline restart (see on_fault), with back-off.
 #include "isp.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <thread>
 
@@ -72,6 +78,8 @@ static uint8_t g_w15[225];          // metering weights (same grid as the AE)
 static uint8_t g_maskmap[64 * 36];  // 1 = covered by a privacy mask
 static std::vector<std::array<float, 4>> g_boxes;
 static int64_t g_boxes_ms = 0;
+// chroma of the last sampled frame: mean U / V and the share of samples with a green cast (both below neutral)
+static float g_mean_u = 128, g_mean_v = 128, g_green_share = 0;
 static float g_speed = 0;
 static bool g_stat_init = false;
 
@@ -104,7 +112,7 @@ void set_subject(const std::vector<std::array<float, 4>> &boxes, float speed_px_
     g_boxes_ms = now_ms();
 }
 
-void feed_luma(const uint8_t *y, int w, int h, int stride) {
+void feed_frame(const uint8_t *y, int w, int h, int stride) {
     std::array<float, 4> boxes[16];
     int nb = 0;
     uint8_t w15[225], mm[64 * 36];
@@ -141,7 +149,24 @@ void feed_luma(const uint8_t *y, int w, int h, int stride) {
             n += wt;
         }
     }
+    // chroma (NV12: interleaved U,V after the luma plane), every 8th sample: enough for a colour-cast check
+    const uint8_t *uv = y + (size_t)stride * h;
+    uint64_t su = 0, sv = 0;
+    uint32_t nc = 0, green = 0;
+    for (int r = 1; r < h / 2; r += 8) {
+        const uint8_t *p = uv + (size_t)r * stride;
+        for (int c = 4; c + 1 < w; c += 16) {
+            int U = p[c], V = p[c + 1];
+            su += U, sv += V, ++nc;
+            green += U < 118 && V < 118;
+        }
+    }
     std::lock_guard<std::mutex> lk(g_hist_mu);
+    if (nc) {
+        g_mean_u = (float)su / nc;
+        g_mean_v = (float)sv / nc;
+        g_green_share = (float)green / nc;
+    }
     memcpy(g_hist, hist, sizeof(hist));
     memcpy(g_hist_roi, hr, sizeof(hr));
     g_hist_n = n;
@@ -194,6 +219,24 @@ struct Ctl {
     int ircut = -1, irled = -1;
     bool ircut_inv = false;
 
+    // controller timing: a bias change is only judged on frames captured after the AE has followed it
+    int64_t ev_changed_ms = 0, last_hist_ms = 0;
+    float e_smooth = 0;  // exposure error (stops), smoothed over the frames since the last settled change
+
+    // health monitor
+    int64_t green_since = 0, frozen_since = 0, qfail_since = 0, last_recover_ms = 0;
+    float last_exp = -1, last_gain = -1;
+    int recoveries = 0;
+    std::string health = "ok", last_fault;
+    float mean_u = 128, mean_v = 128, green_share = 0;
+
+    // manual white balance is relative to the gains auto WB had settled on ("50" = those gains). They are
+    // captured once when manual is chosen, so moving a slider never multiplies an already adjusted gain.
+    float wb_base[4] = {0, 0, 0, 0};  // r, gr, gb, b
+    bool wb_base_ok = false, wb_pending = false;
+    int64_t wb_auto_since = 0;
+    json wb_cfg;
+
     // last measurements
     float median = 0, p02 = 0, p98 = 0, clip_hi = 0, clip_lo = 0, mean = 0;
     float exp_ms = 0, gain = 0, env_lv = 0, aiq_luma = 0;
@@ -202,7 +245,13 @@ struct Ctl {
 };
 static Ctl g_ctl;
 static std::thread g_thread;
-static bool g_run = false;
+static std::atomic<bool> g_run{false};
+static std::function<void(const std::string &)> g_on_fault;
+
+void on_fault(std::function<void(const std::string &)> cb) {
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    g_on_fault = std::move(cb);
+}
 
 // base dynamic setpoint curve (dark scenes to the right get a slightly lower target to keep noise down)
 static float g_dy_exp[6] = {0, 0, 0, 0, 0, 0};
@@ -235,6 +284,7 @@ static void set_ev(float ev) {
     l.Params.Evbias = ev;
     rk_aiq_user_api2_ae_setLinExpAttr(g_ctx, l);
     g_ctl.ev = ev;
+    g_ctl.ev_changed_ms = now_ms();
 }
 
 // longest shutter the AE may use (user limit, or tighter while something fast is in view)
@@ -358,6 +408,40 @@ static void apply_exposure(const json &ex) {
     }
 }
 
+static bool wb_gains_sane(const rk_aiq_wb_gain_t &g) {
+    for (float v : {g.rgain, g.grgain, g.gbgain, g.bgain})
+        if (!(v > 0.25f && v < 12.f)) return false;
+    return true;
+}
+
+// Manual WB = the auto gains (captured once) times the sliders. If auto WB has not run long enough to have
+// settled (manual saved and the camera just started), auto runs first and the controller locks it after 3 s:
+// locking the start-up gains of the AIQ is what turns the picture green.
+static void apply_manual_wb() {
+    Ctl &c = g_ctl;
+    if (!c.wb_base_ok) {
+        rk_aiq_wb_gain_t g;
+        bool settled = c.wb_auto_since && now_ms() - c.wb_auto_since > 3000;
+        if (!settled || rk_aiq_uapi2_getWBGain(g_ctx, &g) != XCAM_RETURN_NO_ERROR || !wb_gains_sane(g)) {
+            rk_aiq_uapi2_setWBMode(g_ctx, OP_AUTO);
+            if (!c.wb_auto_since) c.wb_auto_since = now_ms();
+            c.wb_pending = true;
+            return;
+        }
+        c.wb_base[0] = g.rgain, c.wb_base[1] = g.grgain, c.wb_base[2] = g.gbgain, c.wb_base[3] = g.bgain;
+        c.wb_base_ok = true;
+    }
+    auto k = [&](const char *ch) { return clampf((float)jget<int>(c.wb_cfg, ch, 50), 0.f, 100.f) / 50.f; };  // 0..2x
+    rk_aiq_wb_gain_t g;
+    g.rgain = clampf(c.wb_base[0] * k("r"), 0.5f, 8.f);
+    g.grgain = clampf(c.wb_base[1] * k("g"), 0.5f, 8.f);
+    g.gbgain = clampf(c.wb_base[2] * k("g"), 0.5f, 8.f);
+    g.bgain = clampf(c.wb_base[3] * k("b"), 0.5f, 8.f);
+    rk_aiq_uapi2_setWBMode(g_ctx, OP_MANUAL);
+    rk_aiq_uapi2_setMWBGain(g_ctx, &g);
+    c.wb_pending = false;
+}
+
 static void apply_backlight(const std::string &mode) {
     // blc: expose for the dark subject; hlc: hold down highlights (headlights, lamps)
     rk_aiq_uapi2_setBLCMode(g_ctx, mode == "blc", AE_MEAS_AREA_AUTO);
@@ -454,18 +538,15 @@ void apply(const json &img) {
     if (changed("wb")) {
         json w = img.value("wb", json::object());
         std::string m = jget<std::string>(w, "mode", "auto");
+        std::string was = g_applied.is_null() ? "" : jget<std::string>(g_applied.value("wb", json::object()), "mode", "auto");
+        g_ctl.wb_cfg = w;
+        g_ctl.wb_pending = false;
         if (m == "auto" || m == "basic") {
             rk_aiq_uapi2_setWBMode(g_ctx, OP_AUTO);
+            g_ctl.wb_auto_since = now_ms();
         } else if (m == "manual") {
-            rk_aiq_uapi2_setWBMode(g_ctx, OP_MANUAL);
-            rk_aiq_wb_gain_t g;
-            rk_aiq_uapi2_getWBGain(g_ctx, &g);
-            // 50 = the gains auto WB had settled on
-            g.rgain *= jget<int>(w, "r", 50) / 50.f;
-            g.grgain *= jget<int>(w, "g", 50) / 50.f;
-            g.gbgain *= jget<int>(w, "g", 50) / 50.f;
-            g.bgain *= jget<int>(w, "b", 50) / 50.f;
-            rk_aiq_uapi2_setMWBGain(g_ctx, &g);
+            if (!was.empty() && was != "manual") g_ctl.wb_base_ok = false;  // newly chosen: start from what auto sees now
+            apply_manual_wb();
         } else {
             rk_aiq_wb_scene_t s = m == "incandescent"  ? RK_AIQ_WBCT_INCANDESCENT
                                   : m == "fluorescent" ? RK_AIQ_WBCT_FLUORESCENT
@@ -545,11 +626,13 @@ std::string validate(json &img) {
 
 // ---------------------------------------------------------------- controller loop
 
+// value below which a share q of the samples lie, interpolated inside the 4-level bin (a bare bin centre would
+// quantise the median to ~0.1 stop, half the dead band)
 static float percentile(const uint32_t *h, uint32_t n, float q) {
-    uint32_t want = (uint32_t)(n * q), acc = 0;
+    double want = (double)n * q, acc = 0;
     for (int i = 0; i < 64; ++i) {
+        if (h[i] && acc + h[i] >= want) return (float)(i * 4 + 4.0 * (want - acc) / h[i]);
         acc += h[i];
-        if (acc >= want) return i * 4 + 2;
     }
     return 255;
 }
@@ -641,32 +724,95 @@ static void shutter_step() {
     }
 }
 
+static void fault(const char *what) {
+    Ctl &c = g_ctl;
+    int64_t t = now_ms();
+    // back-off: 2, 4, 8 ... up to 30 min between restarts, so a fault the restart cannot cure does not loop
+    int64_t wait = std::min<int64_t>(30 * 60000, 120000LL << std::min(c.recoveries, 4));
+    if (c.last_recover_ms && t - c.last_recover_ms < wait) return;
+    c.last_recover_ms = t;
+    ++c.recoveries;
+    c.last_fault = what;
+    LOGE(TAG, "picture fault: %s (recovery %d)", what, c.recoveries);
+    if (g_on_fault) g_on_fault(what);
+}
+
+static void health_step(bool queried) {
+    Ctl &c = g_ctl;
+    int64_t t = now_ms();
+    if (!queried) {
+        if (!c.qfail_since) c.qfail_since = t;
+        if (t - c.qfail_since > 10000) {
+            c.health = "aiq_unresponsive";
+            fault("the ISP does not answer exposure queries");
+        }
+        return;
+    }
+    c.qfail_since = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_hist_mu);
+        c.mean_u = g_mean_u, c.mean_v = g_mean_v, c.green_share = g_green_share;
+    }
+    // green cast: nearly the whole picture below neutral on both U and V. A lawn or trees alone never do that
+    // (sky, road and walls stay neutral); missing white-balance gains do. Only in colour mode with auto/scene WB
+    // and enough light for colour.
+    std::string wbm = jget<std::string>(c.wb_cfg, "mode", "auto");
+    bool green = !c.night && wbm != "manual" && c.median > 40 && c.mean_u < 108 && c.mean_v < 108 && c.green_share > 0.85f;
+    c.green_since = green ? (c.green_since ? c.green_since : t) : 0;
+    // frozen AE: the picture is clearly badly exposed, the AE says it is not converged and is not at a limit, and
+    // yet exposure and gain have not moved
+    bool limits = (c.gain >= c.max_gain * 0.95f && c.exp_ms >= c.eff_shutter_ms * 0.92f) || (c.gain <= 1.05f && c.exp_ms <= 0.05f);
+    bool still = c.exp_ms == c.last_exp && c.gain == c.last_gain;
+    bool bad = c.median < 35 || c.median > 215 || c.clip_hi > 0.25f;
+    bool frozen = c.mode != "manual" && !c.paused && !c.converged && still && !limits && bad;
+    c.frozen_since = frozen ? (c.frozen_since ? c.frozen_since : t) : 0;
+    c.last_exp = c.exp_ms, c.last_gain = c.gain;
+    if (c.green_since && t - c.green_since > 20000) {
+        c.health = "green_cast";
+        fault("green picture (white balance not applied)");
+    } else if (c.frozen_since && t - c.frozen_since > 30000) {
+        c.health = "ae_frozen";
+        fault("auto exposure stopped responding");
+    } else if (!c.green_since && !c.frozen_since) {
+        c.health = "ok";
+    }
+}
+
 static void control_step() {
     Ctl &c = g_ctl;
     if (c.paused) return;
     Uapi_ExpQueryInfo_t q;
-    if (rk_aiq_user_api2_ae_queryExpResInfo(g_ctx, &q) != XCAM_RETURN_NO_ERROR) return;
+    bool queried = rk_aiq_user_api2_ae_queryExpResInfo(g_ctx, &q) == XCAM_RETURN_NO_ERROR;
+    if (!queried) {
+        health_step(false);
+        return;
+    }
     c.exp_ms = q.LinAeInfo.LinearExp.integration_time * 1000.f;
     c.gain = q.LinAeInfo.LinearExp.analog_gain;
     c.env_lv = q.GlobalEnvLv;
     c.aiq_luma = q.LinAeInfo.MeanLuma;
     c.converged = q.IsConverged;
 
+    health_step(true);
     daynight_step();
     shutter_step();
+    if (c.wb_pending && now_ms() - c.wb_auto_since > 3000) apply_manual_wb();
 
     uint32_t h[64], hr[64], n, nr;
-    int64_t hist_age;
+    int64_t hist_age, hist_ms;
     {
         std::lock_guard<std::mutex> lk(g_hist_mu);
         memcpy(h, g_hist, sizeof(h));
         memcpy(hr, g_hist_roi, sizeof(hr));
         n = g_hist_n;
         nr = g_hist_roi_n;
+        hist_ms = g_hist_ms;
         hist_age = now_ms() - g_hist_ms;
         g_hist_want = true;
     }
     if (n < 1000 || hist_age > 2000) return;  // no fresh frame (stream stopped?)
+    if (hist_ms == c.last_hist_ms) return;      // the same picture again: nothing new to judge
+    c.last_hist_ms = hist_ms;
 
     Stats g = stats_of(h, n);
     for (int i = 0; i < 32; ++i) c.hist32[i] = h[2 * i] + h[2 * i + 1];
@@ -687,8 +833,10 @@ static void control_step() {
         int64_t t = now_ms();
         float period = 1000.f / (2 * c.flicker_hz);  // 10 ms at 50 Hz
         if (c.flicker_on) {
-            // stuck on the 10 ms floor at minimum gain with blown highlights: outdoor light, flicker-free
-            bool forced = c.exp_ms >= period * 0.95f && c.gain <= 1.1f && c.clip_hi > 0.06f && c.median > 140;
+            // stuck on the 10 ms floor at minimum gain with blown highlights, or so bright that the AE already left the
+            // flicker grid: outdoor light, flicker-free
+            bool forced = (c.exp_ms >= period * 0.95f && c.gain <= 1.1f && c.clip_hi > 0.06f && c.median > 140) ||
+                          (c.exp_ms < period * 0.5f && c.gain <= 1.1f);
             c.bright_since = forced ? (c.bright_since ? c.bright_since : t) : 0;
             if (c.bright_since && t - c.bright_since > 1500) {
                 set_flicker(false, c.flicker_hz);
@@ -750,12 +898,33 @@ static void control_step() {
     }
     if (c.gain >= c.max_gain * 0.9f && c.exp_ms >= c.max_shutter_ms * 0.9f) c.scene = "night";
 
-    // integral control on the bias with a dead band; small steps so the AIQ's own loop stays stable
-    if (std::fabs(e) > c.t_dead && (c.converged || std::fabs(e) > 0.6f)) {
-        float lin = (100.f + c.ev) / 100.f;
-        lin *= std::pow(2.f, clampf(e * c.t_gain, -0.8f, 0.8f));
-        float ev = clampf(lin * 100.f - 100.f, -75.f, 120.f);
-        if (std::fabs(ev - c.ev) >= 1.f) set_ev(ev);
+    // Integral control on the bias, with a dead band. Two rules keep it from hunting:
+    //  - settle: a change is judged only on a frame captured after the AE has followed the last change (the AE
+    //    needs several frames; reacting to the old picture again overshoots and the picture pumps),
+    //  - smoothing: one passing car or a headlight sweep should not move the exposure of the whole scene.
+    // Anti-windup: when the AE is already at its limits the bias is not pushed further, otherwise it winds up
+    // at night and the next morning (or when a light is switched on) starts heavily over-exposed.
+    int64_t since = now_ms() - c.ev_changed_ms;
+    bool settled = hist_ms > c.ev_changed_ms + 120 && ((c.converged && since > 500) || since > 1500);
+    // only pictures taken after the AE followed the last change count; pictures from before would repeat a
+    // correction that is already on its way
+    if (settled) c.e_smooth += (e - c.e_smooth) * (std::fabs(e - c.e_smooth) > 1.5f ? 0.7f : 0.45f);
+    bool at_max = c.gain >= c.max_gain * 0.95f && c.exp_ms >= c.eff_shutter_ms * 0.92f;
+    bool at_min = c.gain <= 1.05f && c.exp_ms <= 0.05f;
+    float es = c.e_smooth;
+    if ((es > 0 && at_max && c.ev >= 0) || (es < 0 && at_min && c.ev <= 0)) es = 0;
+    if (settled && std::fabs(es) > c.t_dead) {
+        float k = std::fabs(es) > 1.5f ? std::min(0.7f, c.t_gain * 1.5f) : c.t_gain;  // big scene change: move faster
+        float lin0 = (100.f + c.ev) / 100.f;
+        float ev = clampf(lin0 * std::pow(2.f, clampf(es * k, -0.8f, 0.8f)) * 100.f - 100.f, -75.f, 120.f);
+        if (std::fabs(ev - c.ev) >= 1.f) {
+            // what is left of the error once the AE has applied this step
+            c.e_smooth -= std::log2((100.f + ev) / 100.f / lin0);
+            set_ev(ev);
+        }
+    } else if (at_max && c.ev > 0 && e > 0 && since > 2000) {
+        // the AE is at its limit with a raised bias: give the bias back slowly so it is neutral when light returns
+        set_ev(std::max(0.f, c.ev - 5.f));
     }
 
     // ---- auto WDR (DRC gain): open up the shadows when the scene's range is wide
@@ -792,6 +961,7 @@ json exposure_test() {
     for (float off : {-1.f, 0.f, 1.f}) {
         {
             std::lock_guard<std::recursive_mutex> lk(g_mu);
+            if (!g_ctx) break;  // the video pipeline restarted meanwhile
             set_ev(clampf(((100.f + base) / 100.f * std::pow(2.f, off)) * 100.f - 100.f, -90.f, 300.f));
         }
         usleep(1600 * 1000);  // let the AE settle
@@ -832,7 +1002,8 @@ json exposure_test() {
     }
     {
         std::lock_guard<std::recursive_mutex> lk(g_mu);
-        set_ev(base);
+        if (g_ctx) set_ev(base);
+        else g_ctl.ev = base;  // restored when the AIQ is back
         g_ctl.paused = false;
     }
     return out;
@@ -840,9 +1011,12 @@ json exposure_test() {
 
 // ---------------------------------------------------------------- lifecycle
 
+static std::string g_iq_dir;
+
 bool start(const std::string &iq_dir, int fps) {
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     if (g_ctx) return true;
+    if (!iq_dir.empty()) g_iq_dir = iq_dir;
     g_fps = fps;
     setenv("HDR_MODE", "0", 1);
     rk_aiq_static_info_t info;
@@ -857,11 +1031,11 @@ bool start(const std::string &iq_dir, int fps) {
         }
         board::set_sensor(info.sensor_info.sensor_name, w, h, best_fps);
     }
-    LOGI(TAG, "sensor %s %dx%d, iq %s", info.sensor_info.sensor_name, board::info().sensor_w, board::info().sensor_h, iq_dir.c_str());
+    LOGI(TAG, "sensor %s %dx%d, iq %s", info.sensor_info.sensor_name, board::info().sensor_w, board::info().sensor_h, g_iq_dir.c_str());
     rk_aiq_uapi2_sysctl_preInit_devBufCnt(info.sensor_info.sensor_name, "rkraw_rx", 2);
     if (rk_aiq_uapi2_sysctl_preInit_scene(info.sensor_info.sensor_name, "normal", "day") < 0)
         LOGW(TAG, "preInit_scene failed");
-    g_ctx = rk_aiq_uapi2_sysctl_init(info.sensor_info.sensor_name, iq_dir.c_str(), nullptr, nullptr);
+    g_ctx = rk_aiq_uapi2_sysctl_init(info.sensor_info.sensor_name, g_iq_dir.c_str(), nullptr, nullptr);
     if (!g_ctx) {
         LOGE(TAG, "AIQ init failed (is another camera app running?)");
         return false;
@@ -873,9 +1047,21 @@ bool start(const std::string &iq_dir, int fps) {
         g_ctx = nullptr;
         return false;
     }
+    // a restarted AIQ starts from its defaults: apply every setting again and resume the controller where it was
     json img = g_applied;
     g_applied = json();
+    g_ctl.wb_auto_since = now_ms();
+    g_ctl.ev_changed_ms = now_ms();
+    g_ctl.e_smooth = 0;
+    g_ctl.green_since = g_ctl.frozen_since = g_ctl.qfail_since = 0;
+    g_ctl.last_exp = g_ctl.last_gain = -1;
+    {
+        std::lock_guard<std::mutex> hl(g_hist_mu);
+        g_hist_ms = 0;  // the last histogram is from before the restart
+        g_hist_want = true;
+    }
     if (!img.is_null()) apply(img);
+    if (g_ctl.wdr_mode == "auto" && g_ctl.drc > 1.f) set_drc(g_ctl.drc);
     g_run = true;
     g_thread = std::thread(loop);
     return true;
@@ -913,6 +1099,8 @@ json status() {
             {"daynight", c.dn_mode},
             {"subject", c.subject},
             {"shutter_cap_ms", std::round(c.eff_shutter_ms * 10.0) / 10.0},
+            {"health", {{"state", c.health}, {"recoveries", c.recoveries}, {"last_fault", c.last_fault},
+                        {"chroma_u", std::round(c.mean_u)}, {"chroma_v", std::round(c.mean_v)}}},
             {"luma", {{"mean", std::round(c.mean)}, {"median", c.median}, {"p02", c.p02}, {"p98", c.p98},
                       {"clip_hi_pct", std::round(c.clip_hi * 1000.0) / 10.0}, {"clip_lo_pct", std::round(c.clip_lo * 1000.0) / 10.0}}},
             {"histogram", hist}};

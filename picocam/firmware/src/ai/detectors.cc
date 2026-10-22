@@ -202,7 +202,7 @@ void Yolov5::decode_plugin(const Letterbox &lb, const Frame &f, std::vector<Det>
 std::vector<Det> Yolov5::detect(const Frame &f, RectF roi) {
     std::vector<Det> dets;
     if (roi.empty()) roi = {0, 0, (float)f.w, (float)f.h};
-    Letterbox lb = nv12_to_rgb(f, roi, model.input(), model.in_w(), model.in_h(), model.in_stride(), !stretch, bgr);
+    Letterbox lb = model.set_input(f, roi, !stretch, bgr);
     if (!model.run()) return dets;
     std::string dec = effective_decoder();
     if (dec == "yolov5") decode_v5(lb, f, dets);
@@ -257,7 +257,7 @@ std::vector<Det> RetinaFace::detect(const Frame &f) {
 
 std::vector<Det> RetinaFace::detect_roi(const Frame &f, RectF roi) {
     std::vector<Det> dets;
-    Letterbox lb = nv12_to_rgb(f, roi, model.input(), model.in_w(), model.in_h(), model.in_stride(), true, bgr);
+    Letterbox lb = model.set_input(f, roi, true, bgr);
     if (!model.run()) return dets;
 
     size_t n = priors_.size() / 4;
@@ -297,7 +297,7 @@ std::vector<float> FaceEmbedder::embed(const Frame &f, const Det &face) {
         // square crop around the face with a small margin (matches the Luckfox facenet preprocessing)
         float side = std::max(face.box.w(), face.box.h()) * 1.1f;
         RectF roi{face.box.cx() - side / 2, face.box.cy() - side / 2, face.box.cx() + side / 2, face.box.cy() + side / 2};
-        nv12_to_rgb(f, roi, model.input(), model.in_w(), model.in_h(), model.in_stride(), true, bgr);
+        model.set_input(f, roi, true, bgr);
     }
     std::vector<float> v;
     if (!model.run()) return v;
@@ -317,7 +317,7 @@ std::vector<float> FaceEmbedder::embed(const Frame &f, const Det &face) {
 
 std::string PlateOcr::read(const Frame &f, RectF plate, float *conf) {
     *conf = 0;
-    nv12_to_rgb(f, plate, model.input(), model.in_w(), model.in_h(), model.in_stride(), false, bgr);
+    model.set_input(f, plate, false, bgr);
     if (!model.run()) return "";
     const rknn_tensor_attr &a = model.out_attr(0);
     // find (classes, steps) among the dims: classes == charset + blank
@@ -453,7 +453,7 @@ int Classifier::classify(const Frame &f, RectF roi, float *prob) {
         float side = std::min(roi.w(), roi.h());
         roi = {roi.cx() - side / 2, roi.cy() - side / 2, roi.cx() + side / 2, roi.cy() + side / 2};
     }
-    nv12_to_rgb(f, roi, model.input(), model.in_w(), model.in_h(), model.in_stride(), false, bgr);
+    model.set_input(f, roi, false, bgr);
     if (!model.run()) return -1;
     const rknn_tensor_attr &a = model.out_attr(0);
     int n = (int)a.n_elems;

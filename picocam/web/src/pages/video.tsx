@@ -45,7 +45,7 @@ function StreamForm(p: { k: 'main' | 'sub'; v: any; sensorFps: number; sensor: [
       {v.codec === 'h264' && <Field label="H.264 profile"><Select value={v.profile} onChange={(x) => set('profile', x)} options={[['high', 'High'], ['main', 'Main'], ['baseline', 'Baseline']]} /></Field>}
       <div class="span2">
         <ToggleRow title="Smart encoding (SmartP)" desc="Long-term reference frames: much lower bitrate for static scenes" checked={!!v.smart_p} onChange={(x) => set('smart_p', x)} />
-        {p.k === 'sub' && <ToggleRow title="Burn AI boxes into the sub stream" desc="For NVRs and players that can't show the web overlay" checked={!!v.ai_overlay} onChange={(x) => set('ai_overlay', x)} />}
+        {p.k === 'sub' && <ToggleRow title="Burn AI boxes into the sub stream" desc="The web live view draws boxes itself. Turn this on to see them in RTSP/VLC/NVR players too (sub stream only; recordings from the main stream stay clean)" checked={!!v.ai_overlay} onChange={(x) => set('ai_overlay', x)} />}
       </div>
     </div>
   );
@@ -85,6 +85,8 @@ export function VideoPage() {
       <div class="grid g2">
         <Card title="On-screen display">
           <div class="form">
+            <ToggleRow title="Show text on the picture" desc="Off removes the date, time and camera name from every stream, snapshot and recording" checked={o.enabled !== false} onChange={(x) => osd.set(upd(o, 'enabled', x))} />
+            {o.enabled !== false && <>
             <ToggleRow title="Date & time" checked={o.time?.enabled !== false} onChange={(x) => osd.set(upd(o, 'time.enabled', x))} />
             <div class="form g2">
               <Field label="Position"><Select value={o.time?.position} onChange={(x) => osd.set(upd(o, 'time.position', x))} options={POS} /></Field>
@@ -97,6 +99,7 @@ export function VideoPage() {
               <Field label="Position"><Select value={o.name?.position} onChange={(x) => osd.set(upd(o, 'name.position', x))} options={POS} /></Field>
             </div>
             <Field label="Size"><Seg value={o.size} onChange={(x) => osd.set({ size: x })} options={[['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]} /></Field>
+            </>}
           </div>
           <SaveBar dirty={osd.dirty} onSave={() => osd.save()} onReset={osd.reload} />
         </Card>

@@ -1,7 +1,9 @@
 #include "rtsp.h"
 
 #include <arpa/inet.h>
+#include <linux/sockios.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -20,7 +22,9 @@ namespace rtsp {
 
 static const char *TAG = "rtsp";
 static const size_t kMtu = 1400;
-static const size_t kMaxBacklog = 768 * 1024;  // bytes queued to a viewer before we start skipping
+// Video queued for a viewer is delay: whatever sits in a queue is shown that much later, for the rest of the
+// session. A slow viewer skips to a fresh keyframe once more than ~0.4 s is waiting, instead of building up seconds.
+static const size_t kMinBacklog = 96 * 1024;
 static std::string g_auth = "digest";
 static Listener g_listener;
 static int g_port = 554;
@@ -40,6 +44,9 @@ class RtspConn : public Conn {
 public:
     RtspConn(int fd, const std::string &peer) : Conn(fd, peer) {
         g_conns.insert(this);
+        // the kernel queue counts too (Linux auto-tunes it to megabytes = seconds of video): keep it small
+        int sndbuf = 128 * 1024;
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
         ssrc_ = (uint32_t)strtoul(random_token(4).c_str(), nullptr, 16);
         session_id_ = random_token(8);
     }
@@ -66,6 +73,7 @@ private:
     void start_stream();
     void stop_stream();
     void on_packet(const Packet &p);
+    size_t backlog() const;
     void send_rtp(const uint8_t *payload_hdr, size_t hdr_len, const uint8_t *data, size_t len, bool marker,
                   uint32_t ts);
     void send_rtcp_sr(uint32_t ts);
@@ -80,7 +88,7 @@ private:
     sockaddr_in udp_dst_{}, udp_rtcp_dst_{};
     uint16_t seq_ = 0;
     uint32_t ssrc_ = 0, octets_ = 0, packets_ = 0;
-    int64_t last_sr_ = 0, ts_base_us_ = -1;
+    int64_t last_sr_ = 0, ts_base_us_ = -1, last_skip_idr_ = 0;
     bool describe_waited_ = false;
     std::string session_id_;
 };
@@ -316,6 +324,12 @@ void RtspConn::start_stream() {
     playing_ = true;
     need_key_ = true;
     gen_ = stream_->generation();
+    if (tcp_) {
+        // kernel send queue of ~0.25 s at this stream's rate (the kernel doubles the value): enough to ride out
+        // Wi-Fi hiccups, too little to build up a delay
+        int sndbuf = std::max(32 * 1024, std::min(256 * 1024, (int)(stream_->kbps() * 1000 / 8 * 0.25f / 2)));
+        setsockopt(fd(), SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+    }
     std::weak_ptr<Conn> self = shared_from_this();
     sub_id_ = stream_->subscribe([self](const Packet &p) {
         g_loop.post([self, p] {
@@ -391,15 +405,32 @@ void RtspConn::send_rtcp_sr(uint32_t ts) {
     }
 }
 
+// bytes waiting for this viewer: our queue plus what the kernel has not sent yet (both are delay)
+size_t RtspConn::backlog() const {
+    int outq = 0;
+    if (tcp_ && ioctl(fd(), SIOCOUTQ, &outq) < 0) outq = 0;
+    return pending() + (size_t)std::max(0, outq);
+}
+
 void RtspConn::on_packet(const Packet &p) {
     if (!playing_ || closed()) return;
     if (stream_->generation() != gen_) {  // encoder was reconfigured: client must re-DESCRIBE
         close();
         return;
     }
-    if (pending() > kMaxBacklog) need_key_ = true;  // too slow: skip to the next keyframe
+    size_t limit = std::max(kMinBacklog, (size_t)(stream_->kbps() * 1000 / 8 * 0.4f));
+    size_t queued = backlog();
+    if (!need_key_ && queued > limit) {
+        // too slow: drop to the next keyframe, and ask for one now rather than waiting out the GOP
+        // (at most every 3 s, a keyframe costs every viewer bitrate)
+        need_key_ = true;
+        if (stream_->request_idr && now_ms() - last_skip_idr_ > 3000) {
+            last_skip_idr_ = now_ms();
+            stream_->request_idr();
+        }
+    }
     if (need_key_) {
-        if (!p.key || pending() > kMaxBacklog / 4) return;
+        if (!p.key || queued > limit / 4) return;
         need_key_ = false;
     }
     if (ts_base_us_ < 0) ts_base_us_ = p.pts_us;
@@ -436,8 +467,11 @@ void RtspConn::on_packet(const Packet &p) {
         }
     }
     if (now_ms() - last_sr_ > 3000) {
+        // the report pairs the wall clock with the RTP time of *now* (not of this picture's capture), so players
+        // and NVRs that sync on it get the camera's real delay
         last_sr_ = now_ms();
-        send_rtcp_sr(ts);
+        int64_t lag = now_us() - p.pts_us;  // capture -> now; only trusted when both clocks clearly agree
+        send_rtcp_sr(ts + (uint32_t)(lag > 0 && lag < 2000000 ? lag * 9 / 100 : 0));
     }
 }
 
