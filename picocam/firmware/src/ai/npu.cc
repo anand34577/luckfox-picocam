@@ -17,8 +17,16 @@ static std::mutex g_stat_mu;
 static double g_pre_ms = 0, g_npu_ms = 0;  // moving averages per model run
 static int64_t g_rga_runs = 0, g_cpu_runs = 0;
 static std::string g_rga_note;
+static std::atomic<bool> g_rga_frames{false};  // the AI frames are in media memory (the only memory the RGA can read)
+static std::string g_frames_note;
 
 void npu_set_preprocess(const std::string &mode) { g_pre_cpu = mode == "cpu"; }
+
+void npu_rga_frames(bool available, const std::string &why) {
+    std::lock_guard<std::mutex> lk(g_stat_mu);
+    g_rga_frames = available;
+    g_frames_note = available ? "" : why;
+}
 
 static void note_time(double *avg, double ms) {
     std::lock_guard<std::mutex> lk(g_stat_mu);
@@ -27,13 +35,17 @@ static void note_time(double *avg, double ms) {
 
 json npu_stats() {
     std::lock_guard<std::mutex> lk(g_stat_mu);
-    std::string be = g_pre_cpu ? "cpu" : g_rga_state == 1 ? "rga" : g_rga_state == 0 ? "rga (checking)" : "cpu (rga unavailable)";
+    std::string be = g_pre_cpu            ? "cpu"
+                     : !g_rga_frames      ? "cpu (no media memory for the RGA)"
+                     : g_rga_state == 1   ? "rga"
+                     : g_rga_state == 0   ? "rga (checking)"
+                                          : "cpu (rga unavailable)";
     int64_t all = g_rga_runs + g_cpu_runs;
     return {{"preprocess", be},
             {"preprocess_ms", std::round(g_pre_ms * 100.0) / 100.0},
             {"inference_ms", std::round(g_npu_ms * 100.0) / 100.0},
             {"rga_share_pct", all ? (int)(g_rga_runs * 100 / all) : 0},
-            {"note", g_rga_note}};
+            {"note", g_rga_note.empty() ? g_frames_note : g_rga_note}};
 }
 
 NpuModel::~NpuModel() {
@@ -187,12 +199,13 @@ bool NpuModel::run() {
     return true;
 }
 
-// The RGA crops, scales and converts NV12 to RGB in one pass and writes straight into the NPU's input buffer (a
-// dma-buf), so the CPU stays free for decoding, tracking and the web server. The source is the AI's copy of the
-// frame (ordinary memory, reached through the RGA's MMU).
+// The RGA crops, scales and converts NV12 to RGB in one pass and writes straight into the NPU's input buffer, so the
+// CPU stays free for decoding, tracking and the web server. Both sides must be dma-bufs in media memory: the
+// RV1103/RV1106 RGA has no MMU, and a frame in ordinary memory (virtual address) makes the kernel driver fail and
+// corrupt kernel memory on its error path (the board freezes). Such frames always take the CPU path.
 bool NpuModel::rga_input(const Frame &f, const Letterbox &lb, bool bgr) {
-    if (!in_mem_ || in_mem_->fd < 0 || in_c_ != 3 || rga_fail_ >= 3) return false;
-    rga_buffer_t src = wrapbuffer_virtualaddr((void *)f.nv12, f.w, f.h, RK_FORMAT_YCbCr_420_SP, f.stride, f.h);
+    if (f.fd < 0 || !in_mem_ || in_mem_->fd < 0 || in_c_ != 3 || rga_fail_ >= 3) return false;
+    rga_buffer_t src = wrapbuffer_fd(f.fd, f.w, f.h, RK_FORMAT_YCbCr_420_SP, f.stride, f.h);
     rga_buffer_t dst = wrapbuffer_fd(in_mem_->fd, in_w_, in_h_, bgr ? RK_FORMAT_BGR_888 : RK_FORMAT_RGB_888, in_wstride_, in_h_);
     im_rect sr = {(int)lb.roi.x1, (int)lb.roi.y1, (int)lb.roi.w(), (int)lb.roi.h()};
     im_rect dr = {lb.pad_x, lb.pad_y, lb.out_w, lb.out_h};
@@ -224,7 +237,7 @@ bool NpuModel::rga_input(const Frame &f, const Letterbox &lb, bool bgr) {
 Letterbox NpuModel::set_input(const Frame &f, RectF roi, bool keep_aspect, bool bgr) {
     int64_t t0 = now_us();
     Letterbox lb = plan_letterbox(f, roi, in_w_, in_h_, keep_aspect);
-    bool hw = !g_pre_cpu && g_rga_state >= 0 && rga_input(f, lb, bgr != g_rga_swap);
+    bool hw = !g_pre_cpu && g_rga_frames && g_rga_state >= 0 && rga_input(f, lb, bgr != g_rga_swap);
     if (hw && g_rga_state == 0) {
         // First RGA picture: check it against the CPU conversion (colour order, range, scaling) before trusting it.
         // The CPU result is what this run uses either way.

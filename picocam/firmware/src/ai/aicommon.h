@@ -41,6 +41,7 @@ void nms(std::vector<Det> &dets, float thr, bool per_class = true);
 struct Frame {
     const uint8_t *nv12 = nullptr;
     int w = 0, h = 0, stride = 0;
+    int fd = -1;        // dma-buf holding nv12 (media memory, the RGA can read it); -1: ordinary memory, CPU only
     int64_t ts_ms = 0;  // wall clock at capture
     int64_t pts_us = 0;  // encoder-clock time of the picture (matches the video stream packets)
     std::shared_ptr<std::vector<uint8_t>> buf;

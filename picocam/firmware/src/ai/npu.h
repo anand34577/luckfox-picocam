@@ -64,5 +64,8 @@ bool npu_share_internal(std::vector<NpuModel *> models);
 
 // Preprocessing backend: "auto" (RGA, verified against the CPU result on first use, CPU fallback) or "cpu".
 void npu_set_preprocess(const std::string &mode);
+// Whether the AI frames are in media memory (dma-buf), the only memory the RGA can read. Without it every model
+// prepares its input on the CPU; `why` is shown in the AI status.
+void npu_rga_frames(bool available, const std::string &why = "");
 // Where the AI time goes: preprocessing backend, average preprocessing / NPU inference time per model run.
 json npu_stats();

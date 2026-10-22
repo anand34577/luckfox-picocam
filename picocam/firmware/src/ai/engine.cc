@@ -20,6 +20,7 @@
 #include "core/log.h"
 #include "core/util.h"
 #include "detectors.h"
+#include "dmabuf.h"
 #include "imgproc.h"
 #include "media/isp.h"
 #include "media/video.h"
@@ -145,6 +146,7 @@ static int g_hook = 0;
 static std::mutex g_fmu;
 static std::condition_variable g_fcv;
 static std::vector<uint8_t> g_fbuf;
+static DmaBuf g_fdma;  // the same frame copy in media memory, so the RGA can read it (preferred over g_fbuf)
 static Frame g_frame;
 static bool g_busy = false, g_ready = false;
 static int64_t g_last_take = 0;
@@ -519,7 +521,9 @@ static json structure(const json &ai) {
     json st = json::array();
     for (auto &sj : ai.value("stages", json::array()))
         if (jget<bool>(sj, "enabled", true)) st.push_back(stage_sig(sj));
-    return {{"en", jget<bool>(ai, "enabled", false)}, {"det", jget<std::string>(d, "model", "")}, {"stages", st}};
+    // the preprocessing backend decides whether an RGA frame buffer is part of the media memory plan
+    return {{"en", jget<bool>(ai, "enabled", false)}, {"det", jget<std::string>(d, "model", "")}, {"stages", st},
+            {"cpu", jget<std::string>(ai, "preprocess", "auto") == "cpu"}};
 }
 
 static void apply_stage_hot(Stage &s, const json &j) {
@@ -989,9 +993,18 @@ static bool frame_hook(video::FrameView &v) {
         if (!gated && !g_busy && t - g_last_take >= 1000 / std::max(1, g_max_fps.load())) {
             g_last_take = t;
             size_t sz = (size_t)v.stride * v.h * 3 / 2;
-            g_fbuf.resize(sz);
-            memcpy(g_fbuf.data(), v.nv12, sz);
-            g_frame.nv12 = g_fbuf.data();
+            if (g_fdma.fd() >= 0 && sz <= g_fdma.size()) {
+                g_fdma.begin_cpu_write();
+                memcpy(g_fdma.data(), v.nv12, sz);
+                g_fdma.end_cpu_write();
+                g_frame.nv12 = g_fdma.data();
+                g_frame.fd = g_fdma.fd();
+            } else {
+                g_fbuf.resize(sz);
+                memcpy(g_fbuf.data(), v.nv12, sz);
+                g_frame.nv12 = g_fbuf.data();
+                g_frame.fd = -1;
+            }
             g_frame.w = v.w;
             g_frame.h = v.h;
             g_frame.stride = v.stride;
@@ -1018,7 +1031,13 @@ static bool frame_hook(video::FrameView &v) {
     return !ov.empty();
 }
 
-static void stop_engine() {
+static void free_rga_frames() {
+    std::lock_guard<std::mutex> fl(g_fmu);
+    g_fdma.release();
+}
+
+// keep_frames: start_with_video() has just taken the RGA frame buffer for the next pipeline
+static void stop_engine(bool keep_frames = false) {
     g_run = false;
     g_fcv.notify_all();
     if (g_th.joinable()) g_th.join();
@@ -1028,12 +1047,39 @@ static void stop_engine() {
         counters_save(g_pipe->rules, true);
     }
     g_pipe.reset();  // frees the NPU memory
+    {
+        // media memory goes back before the video restarts (its encoders need large contiguous blocks)
+        std::lock_guard<std::mutex> fl(g_fmu);
+        g_frame = Frame();
+        if (!keep_frames) g_fdma.release();
+        npu_rga_frames(false);
+    }
     std::lock_guard<std::mutex> lk2(g_ovmu);
     g_overlay.clear();
 }
 
+// Size of one sub-stream NV12 frame, the picture the AI works on
+static size_t ai_frame_bytes() {
+    json sub = g_settings.get("video").value("sub", json::object());
+    return (size_t)(jget<int>(sub, "width", 960) & ~15) * jget<int>(sub, "height", 540) * 3 / 2;
+}
+
+// AI frames in media memory let the RGA prepare the model inputs; without room for them the CPU does it.
+// start_with_video() takes the buffer before the encoders and the NPU (media memory fills up and fragments after);
+// this only covers a start that skipped that step.
+static void alloc_rga_frames(const json &cfg) {
+    if (!jget<bool>(cfg, "enabled", false) || jget<std::string>(cfg, "preprocess", "auto") == "cpu") return;
+    std::lock_guard<std::mutex> fl(g_fmu);
+    if (g_fdma.fd() >= 0 || g_fdma.alloc(ai_frame_bytes())) {
+        npu_rga_frames(true);
+        return;
+    }
+    npu_rga_frames(false, "no media memory left for the RGA's frame buffer: the CPU prepares the model inputs");
+    LOGW(TAG, "no media memory for an RGA frame buffer (%zu KB): CPU preprocessing", ai_frame_bytes() / 1024);
+}
+
 static void configure(const json &cfg, const json &rules) {
-    stop_engine();
+    stop_engine(true);
     g_error.clear();
     g_burn = jget<bool>(g_settings.get("video").value("sub", json::object()), "ai_overlay", false);
     g_max_fps = std::max(1, std::min(30, jget<int>(cfg, "max_fps", 10)));
@@ -1042,6 +1088,7 @@ static void configure(const json &cfg, const json &rules) {
     apply_gate(cfg);
     if (!jget<bool>(cfg, "enabled", false)) {
         LOGI(TAG, "AI disabled");
+        free_rga_frames();
         return;
     }
     long cma0 = meminfo_kb("CmaAllocated");
@@ -1050,6 +1097,7 @@ static void configure(const json &cfg, const json &rules) {
     if (!err.empty()) {
         g_error = err;
         LOGE(TAG, "%s", err.c_str());
+        free_rga_frames();
         return;
     }
     counters_load();
@@ -1061,6 +1109,7 @@ static void configure(const json &cfg, const json &rules) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_pipe = std::move(p);
     }
+    alloc_rga_frames(cfg);
     g_run = true;
     g_th = std::thread(loop);
 }
@@ -1092,11 +1141,31 @@ static std::vector<size_t> memory_blocks(const json &cfg) {
 
 bool start_with_video() {
     json a = effective(g_settings.get("ai"));
-    auto blocks = memory_blocks(a);
-    if (!blocks.empty()) video::cma_reserve(blocks);
-    bool ok = video::start(g_settings.get("video"), g_settings.get("osd"), g_settings.get("masks"));
-    video::cma_release();
-    configure(a, g_settings.get("rules"));
+    json v = g_settings.get("video"), osd = g_settings.get("osd"), masks = g_settings.get("masks");
+    bool ok = false;
+    if (jget<bool>(a, "enabled", false)) {
+        // AI first: its models and the RGA frame buffer pack into the empty media memory, and the encoders then take
+        // the large free block after them. (Reserving holes for the AI around the video leaves the order to chance:
+        // media memory is first-fit and the NPU's own allocations land in whichever hole fits first.)
+        if (jget<std::string>(a, "preprocess", "auto") != "cpu") {
+            std::lock_guard<std::mutex> fl(g_fmu);
+            if (g_fdma.fd() < 0) g_fdma.alloc(ai_frame_bytes());
+        }
+        configure(a, g_settings.get("rules"));
+        ok = video::start(v, osd, masks);
+        if (!ok && g_run) {
+            // the video comes first: give it the memory and load the AI around it (CPU preprocessing)
+            LOGW(TAG, "video did not start with the AI loaded first: starting the video first");
+            stop_engine();
+        }
+    }
+    if (!ok) {
+        auto blocks = memory_blocks(a);
+        if (!blocks.empty()) video::cma_reserve(blocks);
+        ok = video::start(v, osd, masks);
+        video::cma_release();
+        if (!g_run) configure(a, g_settings.get("rules"));
+    }
     if (jget<bool>(a, "enabled", false) && !g_run && g_error.find("memory") == std::string::npos && g_error.find("cannot load") != std::string::npos)
         g_error += " — not enough media memory with the current video settings. Lower the main-stream resolution, use smaller "
                    "models, or increase media memory in System > Performance.";
