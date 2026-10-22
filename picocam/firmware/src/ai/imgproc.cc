@@ -13,24 +13,31 @@
 
 static inline int even(float v) { return ((int)v) & ~1; }
 
-Letterbox nv12_to_rgb(const Frame &f, RectF roi, uint8_t *dst, int dst_w, int dst_h, int dst_stride,
-                      bool keep_aspect, bool bgr) {
+Letterbox plan_letterbox(const Frame &f, RectF roi, int dst_w, int dst_h, bool keep_aspect) {
     roi = roi.clip((float)f.w, (float)f.h);
-    int x = even(roi.x1), y = even(roi.y1);
-    int w = std::max(2, even(roi.x2) - x), h = std::max(2, even(roi.y2) - y);
+    int x = std::min(even(roi.x1), std::max(0, (f.w - 2) & ~1)), y = std::min(even(roi.y1), std::max(0, (f.h - 2) & ~1));
+    int w = std::max(2, std::min(even(roi.x2), f.w & ~1) - x), h = std::max(2, std::min(even(roi.y2), f.h & ~1) - y);
     Letterbox lb;
     lb.roi = {(float)x, (float)y, (float)(x + w), (float)(y + h)};
-
     int tw = dst_w, th = dst_h;
     if (keep_aspect) {
         float s = std::min((float)dst_w / w, (float)dst_h / h);
-        tw = std::max(2, (int)(w * s) & ~1);
-        th = std::max(2, (int)(h * s) & ~1);
+        tw = std::max(2, std::min(dst_w, (int)(w * s) & ~1));
+        th = std::max(2, std::min(dst_h, (int)(h * s) & ~1));
     }
+    lb.out_w = tw;
+    lb.out_h = th;
     lb.sx = (float)tw / w;
     lb.sy = (float)th / h;
     lb.pad_x = (dst_w - tw) / 2;
     lb.pad_y = (dst_h - th) / 2;
+    return lb;
+}
+
+Letterbox nv12_to_rgb(const Frame &f, RectF roi, uint8_t *dst, int dst_w, int dst_h, int dst_stride,
+                      bool keep_aspect, bool bgr) {
+    Letterbox lb = plan_letterbox(f, roi, dst_w, dst_h, keep_aspect);
+    int x = (int)lb.roi.x1, y = (int)lb.roi.y1, w = (int)lb.roi.w(), h = (int)lb.roi.h(), tw = lb.out_w, th = lb.out_h;
 
     cv::Mat Y(f.h, f.w, CV_8UC1, (void *)f.nv12, f.stride);
     cv::Mat UV(f.h / 2, f.w / 2, CV_8UC2, (void *)(f.nv12 + (size_t)f.stride * f.h), f.stride);

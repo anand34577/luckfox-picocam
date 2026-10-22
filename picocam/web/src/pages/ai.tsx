@@ -299,6 +299,11 @@ function PipelineTab() {
             <dl class="kv">
               <dt>State</dt><dd>{aiSt?.running ? <Badge kind="ok">running</Badge> : <Badge>{aiSt?.enabled ? 'stopped' : 'off'}</Badge>}{aiSt?.gated && <> <Badge>motion-gated</Badge></>}</dd>
               <dt>Speed</dt><dd>{aiSt?.fps ?? 0} fps · {aiSt?.infer_ms ?? 0} ms/frame</dd>
+              {aiSt?.npu && (aiSt.npu.inference_ms > 0 || aiSt.npu.preprocess_ms > 0) && (
+                <><dt>Per model run</dt><dd title={aiSt.npu.note || 'Preparing the picture for the model (RGA = 2D hardware, no CPU time) and running it on the NPU'}>
+                  {aiSt.npu.preprocess_ms} ms prepare ({aiSt.npu.preprocess}) · {aiSt.npu.inference_ms} ms NPU
+                </dd></>
+              )}
               <dt>Tracked now</dt><dd>{aiSt?.tracks ?? 0}</dd>
               {aiSt?.profile && <><dt>Profile</dt><dd>{(aiSt.profiles || []).find((x: any) => x.id === aiSt.profile)?.name || aiSt.profile}</dd></>}
             </dl>

@@ -34,7 +34,13 @@ static void on_signal(int) { g_loop.stop(); }
 static void register_settings() {
     g_settings.on(
         "video", [](json &v) { return video::validate(v); },
-        [](const json &, const json &before) {
+        [](const json &v, const json &before) {
+            // burning the AI boxes in is read per frame: no reason to stop the video (and every viewer) for it
+            auto pipeline = [](json j) {
+                if (j.contains("sub") && j["sub"].is_object()) j["sub"].erase("ai_overlay");
+                return j;
+            };
+            if (pipeline(v) == pipeline(before)) return;
             // encoders are rebuilt (in the media-memory-safe order); RTSP clients reconnect and get the new SDP
             g_loop.post([] { rtsp::kick_all(); });
             ai::restart_video(before);
@@ -147,6 +153,8 @@ int main(int argc, char **argv) {
     }
     isp::set_masks(g_settings.get("masks"));
     isp::apply(g_settings.get("image"));
+    // a green picture or a stuck AE is cured by restarting the pipeline, not by a reboot
+    isp::on_fault([](const std::string &why) { ai::recover_video(why); });
     ai::init();
     if (!ai::start_with_video()) {
         LOGE(TAG, "video pipeline failed to start");

@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 
+#include "core/config.h"
+#include "imgproc.h"
 #include "rknn_api.h"
 
 // One RKNN model using the RV1103/RV1106 zero-copy API (NHWC uint8 input, native int8 outputs).
@@ -10,6 +12,10 @@ public:
     ~NpuModel();
     // shared_internal: allocate internal (activation) memory outside, see npu_share_internal()
     bool load(const std::string &path, bool shared_internal = true);
+    // Fills the input tensor with `roi` of the frame, scaled (letterboxed with grey when keep_aspect) and converted
+    // to RGB/BGR. Uses the RGA 2D engine (no CPU time; it writes straight into the NPU's buffer) and falls back to
+    // the CPU path for anything the RGA cannot do. Returns how model coordinates map back to the frame.
+    Letterbox set_input(const Frame &f, RectF roi, bool keep_aspect, bool bgr);
     bool run();
 
     int in_w() const { return in_w_; }
@@ -34,7 +40,10 @@ public:
 private:
     friend bool npu_share_internal(std::vector<NpuModel *> models);
     bool bind_io();  // allocate input/output tensors (must follow rknn_set_internal_mem)
+    bool rga_input(const Frame &f, const Letterbox &lb, bool bgr);
     std::string path_;
+    std::string pad_key_;  // padding the input tensor currently holds (the RGA path refills it only when it changes)
+    int rga_fail_ = 0;     // consecutive RGA failures; after 3 this model stays on the CPU path
     rknn_context ctx_ = 0;
     rknn_tensor_mem *in_mem_ = nullptr;
     std::vector<rknn_tensor_mem *> outs_;
@@ -52,3 +61,8 @@ private:
 // Models in one profile run one after another on the same thread, so they can share a single
 // internal-memory block sized for the largest model. Saves several MB of CMA.
 bool npu_share_internal(std::vector<NpuModel *> models);
+
+// Preprocessing backend: "auto" (RGA, verified against the CPU result on first use, CPU fallback) or "cpu".
+void npu_set_preprocess(const std::string &mode);
+// Where the AI time goes: preprocessing backend, average preprocessing / NPU inference time per model run.
+json npu_stats();

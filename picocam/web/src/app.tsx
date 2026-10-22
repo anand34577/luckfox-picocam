@@ -57,9 +57,15 @@ export function App() {
   useEffect(() => {
     const load = () => api.get('/api/session').then((v) => session.set(v), () => session.set({ activated: true, role: 'none' } as any));
     load();
+    // a 401 from one call does not prove the session is gone: ask the server, and only then drop the live feed
     onAuthLost(() => {
-      disconnectBus();
-      load();
+      api.get('/api/session').then(
+        (v) => {
+          if (v.role === 'none') disconnectBus();
+          session.set(v);
+        },
+        () => {},  // camera unreachable: keep the screen as it is
+      );
     });
   }, []);
   if (!s) return <div class="login-wrap"><span class="spin" /></div>;

@@ -29,16 +29,22 @@ export function LivePage() {
 
   const aiSt = st?.ai;
   const isp = st?.isp;
+  // the camera burns the boxes into the sub stream: drawing ours on top would show every box twice
+  const burned = stream === 'sub' && !!st?.video?.sub?.ai_overlay;
   return (
     <div class="grid split" style={{ gridTemplateColumns: 'minmax(0,1fr) 340px', alignItems: 'start' }}>
       <div class="col">
-        <LiveViewer stream={stream} showAi={ai} rules={zones ? rules : []} />
+        <LiveViewer stream={stream} showAi={ai && !burned} rules={zones ? rules : []} />
         <div class="row">
           <Seg value={stream} onChange={(v) => pick('pc-stream', v, setStream)} options={[['main', 'Main stream'], ['sub', 'Sub stream']]} />
           <span class="grow" />
-          <label class="row small muted" style={{ gap: 8 }}>
-            <Switch checked={ai} onChange={(v) => pick('pc-ai', v ? '1' : '0', () => setAi(v))} /> AI boxes
-          </label>
+          {burned ? (
+            <span class="small muted" title="Video & Audio > Sub stream > Burn AI boxes into the sub stream">AI boxes: in the video</span>
+          ) : (
+            <label class="row small muted" style={{ gap: 8 }}>
+              <Switch checked={ai} onChange={(v) => pick('pc-ai', v ? '1' : '0', () => setAi(v))} /> AI boxes
+            </label>
+          )}
           <label class="row small muted" style={{ gap: 8 }}>
             <Switch checked={zones} onChange={(v) => pick('pc-zones', v ? '1' : '0', () => setZones(v))} /> Zones & lines
           </label>

@@ -1,8 +1,40 @@
 #include "npu.h"
 
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "aicommon.h"
+#include "im2d.h"
+
+// ---------------------------------------------------------------- preprocessing backend and timing
+
+static std::atomic<bool> g_pre_cpu{false};   // the user chose the CPU path
+static std::atomic<int> g_rga_state{0};      // 0 = not verified yet, 1 = verified, -1 = unusable on this board
+static std::atomic<bool> g_rga_swap{false};  // this librga's RGB byte order is the reverse of OpenCV's
+static std::mutex g_stat_mu;
+static double g_pre_ms = 0, g_npu_ms = 0;  // moving averages per model run
+static int64_t g_rga_runs = 0, g_cpu_runs = 0;
+static std::string g_rga_note;
+
+void npu_set_preprocess(const std::string &mode) { g_pre_cpu = mode == "cpu"; }
+
+static void note_time(double *avg, double ms) {
+    std::lock_guard<std::mutex> lk(g_stat_mu);
+    *avg = *avg ? *avg * 0.9 + ms * 0.1 : ms;
+}
+
+json npu_stats() {
+    std::lock_guard<std::mutex> lk(g_stat_mu);
+    std::string be = g_pre_cpu ? "cpu" : g_rga_state == 1 ? "rga" : g_rga_state == 0 ? "rga (checking)" : "cpu (rga unavailable)";
+    int64_t all = g_rga_runs + g_cpu_runs;
+    return {{"preprocess", be},
+            {"preprocess_ms", std::round(g_pre_ms * 100.0) / 100.0},
+            {"inference_ms", std::round(g_npu_ms * 100.0) / 100.0},
+            {"rga_share_pct", all ? (int)(g_rga_runs * 100 / all) : 0},
+            {"note", g_rga_note}};
+}
 
 NpuModel::~NpuModel() {
     if (!ctx_) return;
@@ -129,11 +161,13 @@ bool NpuModel::run() {
     }
     // tensors live in cached memory: flush what the CPU wrote, invalidate what the NPU wrote
     rknn_mem_sync(ctx_, in_mem_, RKNN_MEMORY_SYNC_TO_DEVICE);
+    int64_t t0 = now_us();
     int ret = rknn_run(ctx_, nullptr);
     if (ret < 0) {
         LOGE("ai", "rknn_run(%s) failed: %d", path_.c_str(), ret);
         return false;
     }
+    note_time(&g_npu_ms, (now_us() - t0) / 1000.0);
     for (auto *m : outs_) rknn_mem_sync(ctx_, m, RKNN_MEMORY_SYNC_FROM_DEVICE);
 
     // EDGEAI_DUMP=/dir: write the first input/outputs of each model for offline debugging
@@ -151,6 +185,88 @@ bool NpuModel::run() {
             write(base + ".out" + std::to_string(i), outs_[i]->virt_addr, out_attrs_[i].size_with_stride);
     }
     return true;
+}
+
+// The RGA crops, scales and converts NV12 to RGB in one pass and writes straight into the NPU's input buffer (a
+// dma-buf), so the CPU stays free for decoding, tracking and the web server. The source is the AI's copy of the
+// frame (ordinary memory, reached through the RGA's MMU).
+bool NpuModel::rga_input(const Frame &f, const Letterbox &lb, bool bgr) {
+    if (!in_mem_ || in_mem_->fd < 0 || in_c_ != 3 || rga_fail_ >= 3) return false;
+    rga_buffer_t src = wrapbuffer_virtualaddr((void *)f.nv12, f.w, f.h, RK_FORMAT_YCbCr_420_SP, f.stride, f.h);
+    rga_buffer_t dst = wrapbuffer_fd(in_mem_->fd, in_w_, in_h_, bgr ? RK_FORMAT_BGR_888 : RK_FORMAT_RGB_888, in_wstride_, in_h_);
+    im_rect sr = {(int)lb.roi.x1, (int)lb.roi.y1, (int)lb.roi.w(), (int)lb.roi.h()};
+    im_rect dr = {lb.pad_x, lb.pad_y, lb.out_w, lb.out_h};
+    if (imcheck(src, dst, sr, dr) != IM_STATUS_NOERROR) return false;  // this crop/scale is outside what the RGA does
+    auto failed = [&](const char *what) {
+        if (++rga_fail_ == 3) LOGW("ai", "%s: RGA %s keeps failing, CPU preprocessing for this model", path_.c_str(), what);
+        pad_key_.clear();
+        return false;
+    };
+    // grey bars (YOLO letterbox colour 114); the NPU never writes its input, so they are drawn only when they move
+    std::string key = std::to_string(lb.pad_x) + "," + std::to_string(lb.pad_y) + "," + std::to_string(lb.out_w) + "," + std::to_string(lb.out_h);
+    if (key != pad_key_) {
+        im_rect bars[4] = {{0, 0, in_w_, lb.pad_y},
+                           {0, lb.pad_y + lb.out_h, in_w_, in_h_ - lb.pad_y - lb.out_h},
+                           {0, lb.pad_y, lb.pad_x, lb.out_h},
+                           {lb.pad_x + lb.out_w, lb.pad_y, in_w_ - lb.pad_x - lb.out_w, lb.out_h}};
+        for (auto &r : bars)
+            if (r.width > 0 && r.height > 0 && imfill(dst, r, 0xff727272) != IM_STATUS_SUCCESS) return failed("fill");
+        pad_key_ = key;
+    }
+    rga_buffer_t pat;
+    memset(&pat, 0, sizeof(pat));
+    im_rect pr = {0, 0, 0, 0};
+    if (improcess(src, dst, pat, sr, dr, pr, IM_SYNC) != IM_STATUS_SUCCESS) return failed("convert");
+    rga_fail_ = 0;
+    return true;
+}
+
+Letterbox NpuModel::set_input(const Frame &f, RectF roi, bool keep_aspect, bool bgr) {
+    int64_t t0 = now_us();
+    Letterbox lb = plan_letterbox(f, roi, in_w_, in_h_, keep_aspect);
+    bool hw = !g_pre_cpu && g_rga_state >= 0 && rga_input(f, lb, bgr != g_rga_swap);
+    if (hw && g_rga_state == 0) {
+        // First RGA picture: check it against the CPU conversion (colour order, range, scaling) before trusting it.
+        // The CPU result is what this run uses either way.
+        size_t n = (size_t)in_stride() * in_h_;
+        rknn_mem_sync(ctx_, in_mem_, RKNN_MEMORY_SYNC_FROM_DEVICE);
+        std::vector<uint8_t> rga(input(), input() + n);
+        nv12_to_rgb(f, roi, input(), in_w_, in_h_, in_stride(), keep_aspect, bgr);
+        pad_key_.clear();
+        double d = 0, ds = 0, chroma = 0;
+        size_t cnt = 0;
+        for (int y = lb.pad_y; y < lb.pad_y + lb.out_h; y += 2) {
+            const uint8_t *a = rga.data() + (size_t)y * in_stride() + lb.pad_x * 3, *b = input() + (size_t)y * in_stride() + lb.pad_x * 3;
+            for (int x = 0; x < lb.out_w; x += 2, a += 6, b += 6) {
+                d += std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]);
+                ds += std::abs(a[0] - b[2]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[0]);
+                chroma += std::abs(b[0] - b[2]);
+                cnt += 3;
+            }
+        }
+        if (cnt) d /= cnt, ds /= cnt, chroma /= cnt / 3;
+        if (cnt && d > 10 && ds > 10) {
+            g_rga_state = -1;
+            std::lock_guard<std::mutex> lk(g_stat_mu);
+            g_rga_note = "RGA output differs from the CPU conversion (mean error " + std::to_string((int)d) + "): using the CPU";
+            LOGW("ai", "%s", g_rga_note.c_str());
+        } else if (cnt && chroma >= 6) {  // enough colour in the picture to tell RGB from BGR
+            if (ds < d) g_rga_swap = !g_rga_swap;
+            g_rga_state = 1;
+            LOGI("ai", "preprocessing on the RGA (checked against the CPU: mean error %.1f%s)", std::min(d, ds),
+                 ds < d ? ", channel order swapped" : "");
+        }
+        hw = false;  // this run: the CPU conversion
+    } else if (!hw) {
+        nv12_to_rgb(f, roi, input(), in_w_, in_h_, in_stride(), keep_aspect, bgr);
+        pad_key_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_stat_mu);
+        ++(hw ? g_rga_runs : g_cpu_runs);
+    }
+    note_time(&g_pre_ms, (now_us() - t0) / 1000.0);
+    return lb;
 }
 
 bool npu_share_internal(std::vector<NpuModel *> models) {

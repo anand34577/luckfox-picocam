@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -19,8 +20,13 @@ std::string validate(json &image);
 // apply the whole "image" settings section (cheap: only changed values reach the AIQ)
 void apply(const json &image);
 
-// Luma plane of a (sub-stream) frame; the Smart Exposure controller samples it a few times a second.
-void feed_luma(const uint8_t *y, int w, int h, int stride);
+// A sub-stream NV12 frame (chroma right after the luma plane). The Smart Exposure controller samples its luma, the
+// health monitor its chroma, a few times a second.
+void feed_frame(const uint8_t *nv12, int w, int h, int stride);
+
+// Called (from the ISP controller thread) when the picture is broken in a way only a pipeline restart cures:
+// green cast, frozen AE, AIQ not answering. The callback must not restart synchronously. Rate-limited with back-off.
+void on_fault(std::function<void(const std::string &why)> cb);
 
 // Privacy masks (normalised x,y,w,h): kept out of the exposure statistics.
 void set_masks(const json &masks);

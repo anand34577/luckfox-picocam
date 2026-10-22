@@ -20,6 +20,8 @@ void init();  // registers settings hooks and the frame hook
 bool start_with_video();
 // restart video (and the AI) after a video settings change; rolls back to `before` if the new settings don't fit
 void restart_video(const json &before);
+// restart video and the AI with the current settings, in the background (self-healing after a fault)
+void recover_video(const std::string &why);
 void shutdown();
 json status();
 void register_routes();

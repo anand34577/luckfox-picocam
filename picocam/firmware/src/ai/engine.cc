@@ -1038,6 +1038,7 @@ static void configure(const json &cfg, const json &rules) {
     g_burn = jget<bool>(g_settings.get("video").value("sub", json::object()), "ai_overlay", false);
     g_max_fps = std::max(1, std::min(30, jget<int>(cfg, "max_fps", 10)));
     g_cur_profile = jget<std::string>(cfg, "_profile", "");
+    npu_set_preprocess(jget<std::string>(cfg, "preprocess", "auto"));
     apply_gate(cfg);
     if (!jget<bool>(cfg, "enabled", false)) {
         LOGI(TAG, "AI disabled");
@@ -1115,6 +1116,25 @@ void restart_video(const json &before) {
     g_error = "The last video settings needed more media memory than available and were rolled back.";
 }
 
+void recover_video(const std::string &why) {
+    // never from the caller's thread: the caller may be the ISP controller, which a video restart stops and joins
+    static std::atomic<bool> busy{false};
+    if (!g_sched_run || busy.exchange(true)) return;
+    std::thread([why] {
+        LOGW(TAG, "restarting the video pipeline: %s", why.c_str());
+        audit::record("-", "", "video_recovered", why);
+        {
+            std::lock_guard<std::mutex> rl(g_reconf_mu);
+            if (g_sched_run) {
+                stop_engine();
+                video::stop();
+                if (!start_with_video()) LOGE(TAG, "video pipeline did not come back (the watchdog resets the board)");
+            }
+        }
+        busy = false;
+    }).detach();
+}
+
 // ---------------------------------------------------------------- API
 
 static std::string validate_ai(json &a) {
@@ -1122,6 +1142,8 @@ static std::string validate_ai(json &a) {
     if (fps < 1 || fps > 30) return "max_fps must be 1..30";
     std::string rw = jget<std::string>(a, "run_when", "always");
     if (rw != "always" && rw != "motion") return "run_when must be always or motion";
+    std::string pre = jget<std::string>(a, "preprocess", "auto");
+    if (pre != "auto" && pre != "cpu") return "preprocess must be auto or cpu";
     if (rw == "motion" && !jget<bool>(g_settings.get("motion"), "enabled", false)) return "turn on Motion detection first: the AI runs only while motion is seen";
     if (a.contains("profiles")) {
         if (!a["profiles"].is_array() || a["profiles"].size() > 4) return "at most 4 AI profiles";
@@ -1167,6 +1189,7 @@ static std::string validate_rules(json &r) {
 void init() {
     faces::load();
     g_settings.on("ai", validate_ai, [](const json &now_raw, const json &before_raw) {
+        npu_set_preprocess(jget<std::string>(now_raw, "preprocess", "auto"));
         json now = effective(now_raw), before = effective(before_raw);
         // same models and stage layout: only thresholds etc. changed, apply them live (no video restart)
         if (structure(now) == structure(before)) {
@@ -1248,6 +1271,7 @@ json status() {
             {"infer_ms", std::round(g_ms.load())},
             {"tracks", g_tracks.load()},
             {"frames", g_frames},
+            {"npu", npu_stats()},
             {"counters", counters}};
 }
 

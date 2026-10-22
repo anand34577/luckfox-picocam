@@ -14,12 +14,14 @@ static const char *kRealm = "PicoCam";
 static std::mutex g_mu;
 static json g_db;  // {"users": [...], "keys": [...]}
 
+// Lifetimes use the monotonic clock. The board has no battery-backed clock: the wall time jumps by decades when the
+// browser or NTP sets it, which would expire every session at once and sign the user out on the next click.
 struct Session {
     std::string user;
     Role role;
-    int64_t expires;
+    int64_t expires;  // now_ms() scale
     std::string peer;
-    int64_t created = 0;
+    int64_t created = 0;  // now_ms() scale
 };
 static std::map<std::string, Session> g_sessions;
 
@@ -156,11 +158,12 @@ std::string session_id(const std::string &token) { return sha256_hex(token).subs
 json list_sessions(const std::string &current_token) {
     std::lock_guard<std::mutex> lk(g_mu);
     json out = json::array();
-    int64_t now = wall_ms();
+    int64_t now = now_ms(), wall = wall_ms();  // shown to the user as wall-clock times
     for (auto &kv : g_sessions)
         if (kv.second.expires >= now)
             out.push_back({{"id", session_id(kv.first)}, {"user", kv.second.user}, {"role", role_name(kv.second.role)},
-                           {"peer", kv.second.peer}, {"created", kv.second.created}, {"expires", kv.second.expires},
+                           {"peer", kv.second.peer}, {"created", wall - (now - kv.second.created)},
+                           {"expires", wall + (kv.second.expires - now)},
                            {"current", kv.first == current_token}});
     return out;
 }
@@ -189,7 +192,7 @@ std::string create_session(const std::string &user, Role r, const std::string &p
     std::string t = random_token(24);
     std::lock_guard<std::mutex> lk(g_mu);
     // expire old sessions
-    int64_t now = wall_ms();
+    int64_t now = now_ms();
     for (auto it = g_sessions.begin(); it != g_sessions.end();) it = it->second.expires < now ? g_sessions.erase(it) : ++it;
     g_sessions[t] = {user, r, now + (int64_t)hours * 3600 * 1000, peer, now};
     return t;
@@ -198,7 +201,7 @@ std::string create_session(const std::string &user, Role r, const std::string &p
 Role check_session(const std::string &token, std::string *user) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_sessions.find(token);
-    if (it == g_sessions.end() || it->second.expires < wall_ms()) return NONE;
+    if (it == g_sessions.end() || it->second.expires < now_ms()) return NONE;
     // the user may have been deleted or downgraded since login
     json *u = find_user(it->second.user);
     if (!u) return NONE;

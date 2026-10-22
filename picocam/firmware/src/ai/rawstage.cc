@@ -11,7 +11,7 @@
 
 json RawModel::run(const Frame &f, RectF roi) {
     if (roi.empty()) roi = {0, 0, (float)f.w, (float)f.h};
-    nv12_to_rgb(f, roi, model.input(), model.in_w(), model.in_h(), model.in_stride(), false, bgr);
+    model.set_input(f, roi, false, bgr);
     if (!model.run()) return json();
     json outs = json::array();
     for (int o = 0; o < model.num_outputs(); ++o) {
@@ -32,7 +32,7 @@ void RawModel::bench(const Frame &f, int n, double *avg_ms, double *min_ms) {
     double sum = 0, best = 1e9;
     for (int i = 0; i < n; ++i) {
         int64_t t0 = now_us();
-        nv12_to_rgb(f, RectF{0, 0, (float)f.w, (float)f.h}, model.input(), model.in_w(), model.in_h(), model.in_stride(), false, bgr);
+        model.set_input(f, RectF{0, 0, (float)f.w, (float)f.h}, false, bgr);
         model.run();
         double ms = (now_us() - t0) / 1000.0;
         sum += ms;

@@ -105,6 +105,12 @@ export function ImagePage() {
                 <div><div class="dim small">Light level</div><b>{isp.env_lv}</b></div>
                 <div><div class="dim small">Shutter limit</div><b>{isp.shutter_cap_ms} ms</b></div>
                 <div><div class="dim small">Mode</div><b>{isp.night ? 'night (B/W)' : 'day'}</b></div>
+                {isp.health && (
+                  <div title={isp.health.last_fault ? `Last automatic recovery: ${isp.health.last_fault}` : 'Watches for a green picture or a stuck exposure and restarts the video pipeline if one appears'}>
+                    <div class="dim small">Picture health</div>
+                    <b>{isp.health.state === 'ok' ? 'ok' : isp.health.state.replace('_', ' ')}{isp.health.recoveries ? ` · ${isp.health.recoveries} recovered` : ''}</b>
+                  </div>
+                )}
                 <div><div class="dim small">Metering</div><b>{isp.subject ? 'on object' : 'scene'}</b></div>
                 {isp.wb && <div><div class="dim small">Colour temp.</div><b>{isp.wb.cct ? `${isp.wb.cct} K` : '—'}</b></div>}
                 {isp.wb?.smart && <div><div class="dim small">WB correction</div><b>R×{isp.wb.correction_r} B×{isp.wb.correction_b}</b></div>}

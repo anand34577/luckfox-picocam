@@ -42,6 +42,7 @@ static const char *kDefaults = R"JSON({
   },
 
   "osd": {
+    "enabled": true,
     "time": { "enabled": true, "position": "top-left", "format": "%Y-%m-%d %H:%M:%S" },
     "name": { "enabled": true, "position": "bottom-right", "text": "" },
     "size": "medium"
@@ -62,6 +63,7 @@ static const char *kDefaults = R"JSON({
   "ai": {
     "enabled": false,
     "max_fps": 10,
+    "preprocess": "auto",
     "detector": { "model": "", "conf": 0.4, "nms": 0.45, "classes": [], "min_box_px": 12 },
     "stages": [],
     "draw_on_web": true,

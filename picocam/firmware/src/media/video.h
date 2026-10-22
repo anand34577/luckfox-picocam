@@ -33,8 +33,8 @@ bool start(const json &video, const json &osd, const json &masks);
 void stop();
 bool restart(const json &video, const json &osd, const json &masks);
 bool running();
-// how long the video path looks stuck (0 = healthy): an encoder that stopped producing packets, or a start/stop
-// that has not returned. Used by the hardware watchdog.
+// how long the video path looks stuck (0 = healthy): an encoder that stopped producing packets, a start/stop
+// that has not returned, or a start that failed. Used by the hardware watchdog.
 int64_t stalled_ms();
 
 // live changes that don't need an encoder restart
