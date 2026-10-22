@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.1
+
+- **Fixes the board freezing with 1.4.0** (no blinking light, "USB device not recognized" on the PC). The RGA on the RV1103/RV1106 has
+  no MMU and can only read pictures in media memory; 1.4.0 handed it the AI's copy of the frame in ordinary memory, the kernel driver
+  failed and damaged kernel memory, and the board locked up shortly after start. The AI picture now goes into a media-memory buffer
+  the RGA can read, so RGA preprocessing works and takes about 1 ms (AI thread CPU about 2% instead of 12% on the CPU path). When no
+  media memory is free for it, the AI prepares the picture on the CPU, and AI & Analytics says why.
+- **Installer:** no longer reports "0 MB free" and stops when the storage name is long enough for `df` to wrap its line. The deploy
+  scripts and `doctor.sh` read free space the same way.
+
 ## 1.4.0
 
 - **No more green picture or dead exposure after a settings change.** Saving Video & Audio settings, changing an AI model or a
