@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: server/go.mod
-      - run: go vet ./... && go build -o /dev/null ./...
+      - run: go vet ./... && go build -o /dev/null ./... && go test ./...
         working-directory: server
 
   build:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0
+
+- **EdgeAI server: an API for your own application.** Every face and vehicle detection comes with its pictures (whole frame, cropped
+  face, cropped plate, cropped vehicle), the person's name once saved, and the plate number with its validity and confidence. People,
+  vehicles (one per plate, with owner, label and an allow/block flag), reports, per-camera timelines, CSV export and webhooks are
+  available over REST. The full reference is in `docs/API.md`, and the server serves an OpenAPI spec at `/api/v1/openapi.json`.
+- **Alerts:** rules send a message to Telegram, ntfy, email or any web address when a blocked plate or an unknown face is seen,
+  at certain hours, or when a camera goes offline, runs hot or the server disk fills up. Each rule has a cooldown so one visitor is one alert.
+- **Housekeeping:** automatic cleanup by age and by disk size (named people and labelled plates are kept longer), a backup download,
+  an audit log of changes, and a call that erases a person or a plate completely.
+- **Safer access:** several API keys with read-only or admin rights and an expiry, a sign-in page for the dashboard, expiring signed picture
+  links, and a limit on wrong-key attempts. The server still starts open unless you give it `-api-key`.
+- **Firmware:** the heartbeat to the EdgeAI server also reports temperature, CPU and NPU load, which the new health alerts use.
+  Nothing changes on the camera when EdgeAI is off.
+
 ## 1.2.3
 
 - **Docs:** the screenshots, banner and social preview show a real street photo instead of a drawn scene, so the AI boxes and plate

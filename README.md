@@ -54,6 +54,7 @@ Back to the stock firmware at any time: `sh /oem/picocam/uninstall.sh && reboot`
 | [Install guide](docs/INSTALL.md) | Flashing, connecting, installing, first start, updating |
 | [User guide](docs/USER-GUIDE.md) | Every page of the web portal with pictures |
 | [Connecting other software](docs/CONNECTING.md) | VLC, NVRs, Frigate, Home Assistant, alerts, the API |
+| [EdgeAI server API](docs/API.md) | REST + webhooks for faces, people, vehicles and plates, with images (OpenAPI spec included) |
 | [AI models](docs/MODELS.md) | The ready-made models, adding your own |
 | [Boards](docs/BOARDS.md) | Which boards, flash types, what is verified |
 | [FAQ](docs/FAQ.md) | Short answers |

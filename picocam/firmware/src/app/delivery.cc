@@ -669,6 +669,9 @@ static void heartbeat_loop() {
                    {"ip", ip},
                    {"streams", {{"main", "rtsp://" + ip + "/live/main"}, {"sub", "rtsp://" + ip + "/live/sub"}}},
                    {"mem_avail_kb", st["mem_avail_kb"]},
+                   {"temp_c", st["temp_c"]},
+                   {"cpu_pct", st["cpu_pct"]},
+                   {"npu_load_pct", st["npu_load_pct"]},
                    {"cma_used_kb", st["media_mem_used_kb"]},
                    {"cma_total_kb", st["media_mem_total_kb"]}};
         auto r = httpc::request("POST", url + "/api/v1/heartbeat", "application/json", hb.dump(), {}, 5, tls_opts(ea));
