@@ -83,6 +83,7 @@ private:
     int sub_id_ = 0;
     int64_t gen_ = -1;
     bool playing_ = false, tcp_ = true, need_key_ = true, authed_ = false;
+    int64_t play_ms_ = 0;  // PLAY time until the first picture went out
     int ch_rtp_ = 0, ch_rtcp_ = 1;
     int udp_fd_ = -1;
     sockaddr_in udp_dst_{}, udp_rtcp_dst_{};
@@ -323,6 +324,7 @@ void RtspConn::start_stream() {
     if (playing_) return;
     playing_ = true;
     need_key_ = true;
+    play_ms_ = now_ms();
     gen_ = stream_->generation();
     if (tcp_) {
         // kernel send queue of ~0.25 s at this stream's rate (the kernel doubles the value): enough to ride out
@@ -432,6 +434,10 @@ void RtspConn::on_packet(const Packet &p) {
     if (need_key_) {
         if (!p.key || queued > limit / 4) return;
         need_key_ = false;
+        if (play_ms_) {
+            LOGI(TAG, "%s: first picture %lld ms after PLAY", peer_.c_str(), (long long)(now_ms() - play_ms_));
+            play_ms_ = 0;
+        }
     }
     if (ts_base_us_ < 0) ts_base_us_ = p.pts_us;
     uint32_t ts = (uint32_t)((p.pts_us - ts_base_us_) * 9 / 100);  // 90 kHz

@@ -691,7 +691,12 @@ void apply_masks(const json &masks) {
 // ---------------------------------------------------------------- lifecycle
 
 void request_idr(int stream) {
-    if (g_run) RK_MPI_VENC_RequestIDR(stream == 0 ? kChMain : kChSub, RK_TRUE);
+    if (!g_run) return;
+    int ch = stream == 0 ? kChMain : kChSub;
+    // an encoder fed by the app (the sub stream) refuses an instant request ("not supported"): the next frame then
+    int r = RK_MPI_VENC_RequestIDR(ch, RK_TRUE);
+    if (r != RK_SUCCESS) r = RK_MPI_VENC_RequestIDR(ch, RK_FALSE);
+    if (r != RK_SUCCESS) LOGW(TAG, "keyframe request on the %s stream failed: %#x", stream == 0 ? "main" : "sub", r);
 }
 
 static void teardown() {
