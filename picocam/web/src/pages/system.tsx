@@ -161,6 +161,36 @@ function Users() {
   );
 }
 
+function RootMode() {
+  const [rm, setRm] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.get('/api/system/root-mode').then(setRm, () => {});
+  }, []);
+  if (!rm) return null;
+  return (
+    <Card title="Power-cut protection" hint="Read-only system partition">
+      <div class="form">
+        <dl class="kv">
+          <dt>System partition</dt><dd>{rm.read_only ? <Badge kind="ok">read-only</Badge> : <Badge kind="warn">writable</Badge>}</dd>
+        </dl>
+        <ToggleRow title="Keep the system partition read-only" desc="Nothing writes to the operating system, so a power cut cannot damage it. Settings, recordings and updates are stored elsewhere and keep working." checked={rm.wanted && rm.supported} disabled={!rm.supported || !isAdmin() || busy} onChange={async (x) => {
+          setBusy(true);
+          try {
+            setRm(await api.post('/api/system/root-mode', { read_only: x }));
+            toast(x ? 'System partition is read-only' : 'System partition is writable', 'ok');
+          } catch (e: any) {
+            toast(e.message, 'err');
+          }
+          setBusy(false);
+        }} />
+        {!rm.supported && <Callout kind="warn">Not available: {rm.reason}.</Callout>}
+        {rm.supported && rm.wanted && !rm.read_only && <Callout kind="warn">Something still has a file open on the system partition; it becomes read-only on the next restart.</Callout>}
+      </div>
+    </Card>
+  );
+}
+
 function Maintenance() {
   const [pct, setPct] = useState(-1);
   const [us, setUs] = useState<any>(null);
@@ -230,6 +260,7 @@ function Maintenance() {
           <div class="small dim">Versions, status, settings (without passwords), logs and crash reports in one file for support.</div>
         </div>
       </Card>
+      <RootMode />
       <Card title="Restart">
         <div class="row">
           <Btn icon="refresh" onClick={async () => (await confirmDialog('Restart service', 'Restart the camera service (about 10 s)?')) && api.post('/api/system/restart').then(() => toast('Restarting…'))}>Restart service</Btn>

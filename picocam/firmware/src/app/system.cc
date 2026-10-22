@@ -253,7 +253,7 @@ void apply_usb(const json &n) {
 void apply_network(const json &n) {
     std::string h = jget<std::string>(n, "hostname", "picocam");
     run_cmd("hostname '" + h + "'");
-    write_file("/etc/hostname", h + "\n");
+    write_system_file("/etc/hostname", h + "\n");
     apply_usb(n);
     // Ethernet settings apply on boards that have it (Plus, Pro, Max, Ultra); the USB address was handled above
     if (!file_exists("/sys/class/net/eth0")) {
@@ -272,7 +272,15 @@ void apply_network(const json &n) {
         std::string resolv;
         for (auto &d : n.value("dns", json::array()))
             if (d.is_string() && !d.get<std::string>().empty()) resolv += "nameserver " + d.get<std::string>() + "\n";
-        if (!resolv.empty()) write_file("/etc/resolv.conf", resolv);
+        if (!resolv.empty()) {
+            // a link into /tmp on these images: write its target, the system partition may be read-only
+            char lnk[256];
+            ssize_t n = readlink("/etc/resolv.conf", lnk, sizeof(lnk) - 1);
+            std::string to = n > 0 ? std::string(lnk, n) : "";
+            if (!to.empty() && to[0] != '/') to = "/etc/" + to;
+            if (!to.empty()) write_file(to, resolv);
+            else write_system_file("/etc/resolv.conf", resolv);
+        }
         LOGI(TAG, "eth0 static %s gw %s", ip.c_str(), gw.c_str());
     } else {
         run_cmd("udhcpc -i eth0 -b -p /var/run/udhcpc.eth0.pid >/dev/null 2>&1 &");
@@ -299,7 +307,7 @@ void apply_time(const json &t) {
     std::string tz = jget<std::string>(t, "timezone", "IST-5:30");
     setenv("TZ", tz.c_str(), 1);
     tzset();
-    write_file("/etc/TZ", tz + "\n");
+    write_system_file("/etc/TZ", tz + "\n");
     if (jget<bool>(t, "ntp", true)) g_ntp_now = true;
 }
 
@@ -405,11 +413,14 @@ static void loop() {
     }
 }
 
+static void prepare_media_partition();
+
 void start() {
     apply_time(g_settings.get("time"));
     g_run = true;
     g_th = std::thread(loop);
     g_ntp_th = std::thread(ntp_loop);
+    prepare_media_partition();
 }
 
 void stop() {
@@ -439,25 +450,31 @@ static uint32_t crc32(const uint8_t *d, size_t n) {
     return c ^ 0xffffffffu;
 }
 
-// reads the env and checks its CRC; returns the offset of the "NN" in rk_dma_heap_cma=NNM or -1
-static long env_load(std::string &env, std::string *err) {
+// reads the env and checks its CRC
+static bool env_read(std::string &env, std::string *err) {
     if (!file_exists(kEnvDev)) {
         *err = "the boot environment cannot be edited from Linux on this board (SPI-NAND boot). Change rk_dma_heap_cma in the "
                "SDK's env and reflash, or run `fw_setenv` if your image ships it. See docs/BOARDS.md";
-        return -1;
+        return false;
     }
     std::string all;
     if (!read_file(kEnvDev, all) || all.size() < kEnvSize) {
         *err = "cannot read boot environment";
-        return -1;
+        return false;
     }
     env = all.substr(0, kEnvSize);
     const uint8_t *d = (const uint8_t *)env.data();
     uint32_t stored = d[0] | (d[1] << 8) | (d[2] << 16) | ((uint32_t)d[3] << 24);
     if (crc32(d + 4, kEnvSize - 4) != stored) {
         *err = "boot environment checksum mismatch: not touching it";
-        return -1;
+        return false;
     }
+    return true;
+}
+
+// reads the env; returns the offset of the "NN" in rk_dma_heap_cma=NNM or -1
+static long env_load(std::string &env, std::string *err) {
+    if (!env_read(env, err)) return -1;
     size_t p = env.find("rk_dma_heap_cma=");
     if (p == std::string::npos) {
         *err = "rk_dma_heap_cma not found in the boot environment";
@@ -469,6 +486,36 @@ static long env_load(std::string &env, std::string *err) {
         return -1;
     }
     return (long)p;
+}
+
+// writes a changed env (new CRC), reads it back and puts the original back if anything differs; "" on success
+static std::string env_write(std::string env) {
+    std::string orig, err;
+    if (!env_read(orig, &err)) return err;
+    mkdirs(g_paths.data);
+    std::string bak = g_paths.data + "/env.backup";
+    if (!file_exists(bak) && !write_file(bak, orig)) return "cannot back up the boot environment";
+    uint32_t c = crc32((const uint8_t *)env.data() + 4, kEnvSize - 4);
+    env[0] = (char)(c & 0xff), env[1] = (char)((c >> 8) & 0xff), env[2] = (char)((c >> 16) & 0xff), env[3] = (char)(c >> 24);
+    FILE *fp = fopen(kEnvDev, "r+b");
+    if (!fp) return "cannot open boot environment for writing";
+    size_t w = fwrite(env.data(), 1, kEnvSize, fp);
+    fflush(fp);
+    fsync(fileno(fp));
+    fclose(fp);
+    sync();
+    std::string check;
+    if (w != kEnvSize || !env_read(check, &err) || check != env) {
+        if ((fp = fopen(kEnvDev, "r+b"))) {
+            fwrite(orig.data(), 1, kEnvSize, fp);
+            fflush(fp);
+            fsync(fileno(fp));
+            fclose(fp);
+            sync();
+        }
+        return "verification failed, original restored";
+    }
+    return "";
 }
 
 json media_memory() {
@@ -497,34 +544,155 @@ std::string set_media_memory(int mb) {
     long off = env_load(env, &err);
     if (off < 0) return err;
     if (atoi(env.c_str() + off) == mb) return "";
-    mkdirs(g_paths.data);
-    std::string bak = g_paths.data + "/env.backup";
-    if (!file_exists(bak) && !write_file(bak, env)) return "cannot back up the boot environment";
     char two[3];
     snprintf(two, sizeof(two), "%02d", mb);
     env[off] = two[0];
     env[off + 1] = two[1];
-    uint32_t c = crc32((const uint8_t *)env.data() + 4, kEnvSize - 4);
-    env[0] = (char)(c & 0xff), env[1] = (char)((c >> 8) & 0xff), env[2] = (char)((c >> 16) & 0xff), env[3] = (char)(c >> 24);
-    FILE *fp = fopen(kEnvDev, "r+b");
-    if (!fp) return "cannot open boot environment for writing";
-    size_t w = fwrite(env.data(), 1, kEnvSize, fp);
-    fflush(fp);
-    fsync(fileno(fp));
-    fclose(fp);
-    sync();
-    std::string check, e2;
-    if (w != kEnvSize || env_load(check, &e2) < 0 || check != env) {
-        // put the original back
-        std::string orig;
-        if (read_file(bak, orig) && (fp = fopen(kEnvDev, "r+b"))) {
-            fwrite(orig.data(), 1, kEnvSize, fp);
-            fclose(fp);
-            sync();
-        }
-        return "verification failed, original restored";
-    }
+    std::string e = env_write(env);
+    if (!e.empty()) return e;
     LOGW(TAG, "media memory set to %d MB (after reboot)", mb);
+    return "";
+}
+
+// ---------------------------------------------------------------- system card layout
+// Luckfox's SD image gives the system (root) partition a fixed 6 GB and leaves the rest of the card unpartitioned.
+// The partitions come from blkdevparts= in the U-Boot env, so a "media" partition is added after the system one, running
+// to the end of the card (after a restart). Recordings and events go there, which lets the system partition stay
+// read-only: a power cut can then never damage the OS.
+
+enum CardLayout { kCardNone, kCardMedia, kCardPending, kCardFullRoot };
+static std::atomic<int> g_card_layout{kCardNone};
+static std::atomic<int64_t> g_card_unused{0};  // bytes no partition uses (counted at start-up)
+
+static int64_t sys_sectors(const std::string &path) {
+    std::string s;
+    return read_file(path, s) ? atoll(trim(s).c_str()) : -1;
+}
+
+static void prepare_media_partition() {
+    std::string cmd;
+    read_file("/proc/cmdline", cmd);
+    if (cmd.find("storagemedia=sd") == std::string::npos) return;
+    if (cmd.find("(media)") != std::string::npos) {
+        g_card_layout = kCardMedia;
+        return;
+    }
+    size_t p = cmd.find("root=/dev/");
+    if (p == std::string::npos) return;
+    std::string part = split(cmd.substr(p + 10), ' ')[0];  // mmcblk1p7
+    size_t pp = part.rfind('p');
+    if (part.compare(0, 6, "mmcblk") != 0 || pp == std::string::npos || pp < 7) return;
+    std::string disk = part.substr(0, pp);
+    int partno = atoi(part.c_str() + pp + 1);
+    int64_t disk_s = sys_sectors("/sys/block/" + disk + "/size"), start_s = sys_sectors("/sys/class/block/" + part + "/start"),
+            size_s = sys_sectors("/sys/class/block/" + part + "/size");
+    if (disk_s <= 0 || start_s < 0 || size_s <= 0) return;
+    int64_t unused = (disk_s - start_s - size_s) * 512;
+    g_card_unused = unused > 0 ? unused : 0;
+
+    std::string env, err;
+    if (!env_read(env, &err)) return LOGW(TAG, "card: %s", err.c_str());
+    size_t b = env.find("blkdevparts="), be = b == std::string::npos ? b : env.find('\0', b);
+    if (be == std::string::npos) return;
+    std::string val = env.substr(b + 12, be - b - 12);
+    size_t ds = val.find(disk + ":");
+    if (ds == std::string::npos) return;
+    size_t de = val.find(';', ds);
+    std::string list = val.substr(ds + disk.size() + 1, (de == std::string::npos ? val.size() : de) - ds - disk.size() - 1);
+    auto entries = split(list, ',');
+    // already added, waiting for the restart
+    if ((int)entries.size() == partno + 1 && ends_with(list, "(media)")) {
+        g_card_layout = kCardPending;
+        return LOGI(TAG, "card: the media partition (%.1f GB) is used after the next restart", unused / 1e9);
+    }
+    // only touch what this boot was made from, and only when the system partition is the last one
+    if (cmd.find("blkdevparts=" + val) == std::string::npos || (int)entries.size() != partno) return;
+    if (entries.back().compare(0, 1, "-") == 0) {
+        // the system partition already runs to the end of the card (older PicoCam test build or a custom image)
+        g_card_layout = kCardFullRoot;
+        return LOGW(TAG, "card: the system partition fills the whole card; re-flash the SD card for separate recordings storage and a read-only system");
+    }
+    if (unused < (1ll << 30)) return;
+    size_t at = b + 12 + ds + disk.size() + 1 + list.size();  // end of this disk's list in env
+    size_t used = env.find(std::string("\0\0", 2), 4);
+    if (used == std::string::npos || used + 16 > kEnvSize) return LOGW(TAG, "card: no room in the boot environment");
+    std::string grown = env.substr(0, at) + ",-(media)" + env.substr(at);
+    grown.resize(kEnvSize, '\0');
+    err = env_write(grown);
+    if (!err.empty()) return LOGE(TAG, "could not add the media partition: %s", err.c_str());
+    g_card_layout = kCardPending;
+    LOGW(TAG, "card: %.1f GB were unused; a media partition for recordings is added on the next restart", unused / 1e9);
+}
+
+json card_layout() {
+    static const char *names[] = {"none", "media", "pending", "full_root"};
+    return {{"layout", names[g_card_layout.load()]}, {"unused_bytes", g_card_unused.load()}};
+}
+
+// ---------------------------------------------------------------- read-only system partition
+// service.sh does the switching (also at boot); /etc/picocam.ro is the marker its boot hook reads. PicoCam's own writes
+// to the system partition (hostname, time zone, root password, boot stub) open it for a moment with RootWrite.
+
+static const char *kRoMarker = "/etc/picocam.ro";
+static std::mutex g_rw_mu;
+static int g_rw_depth = 0;
+
+RootWrite::RootWrite() {
+    std::lock_guard<std::mutex> lk(g_rw_mu);
+    if (g_rw_depth++ == 0 && file_exists(kRoMarker)) run_cmd("mount -o remount,rw / 2>/dev/null");
+}
+
+RootWrite::~RootWrite() {
+    std::lock_guard<std::mutex> lk(g_rw_mu);
+    if (--g_rw_depth == 0 && file_exists(kRoMarker)) {
+        ::sync();
+        run_cmd("mount -o remount,ro / 2>/dev/null");
+    }
+}
+
+bool write_system_file(const std::string &path, const std::string &data) {
+    std::string cur;
+    if (read_file(path, cur) && cur == data) return true;  // unchanged: no write at all
+    RootWrite rw;
+    return write_file(path, data);
+}
+
+static bool root_mounted_ro() {
+    std::string m;
+    read_file("/proc/mounts", m);
+    for (auto &l : split(m, '\n')) {
+        auto f = split(l, ' ');
+        if (f.size() >= 4 && f[1] == "/") return f[3] == "ro" || f[3].compare(0, 3, "ro,") == 0;
+    }
+    return false;
+}
+
+json root_mode() {
+    std::string cmd;
+    read_file("/proc/cmdline", cmd);
+    bool sd = cmd.find("storagemedia=sd") != std::string::npos, mmc = sd || cmd.find("storagemedia=emmc") != std::string::npos;
+    std::string why;
+    if (!mmc) why = "only for boards that boot from an SD card or eMMC";
+    else if (sd && cmd.find("(media)") == std::string::npos)
+        why = g_card_layout == kCardPending    ? "the media partition is ready after the next restart"
+              : g_card_layout == kCardFullRoot ? "the system partition fills the whole card: re-flash the SD card first (docs/INSTALL.md)"
+                                               : "recordings are on the system partition (card smaller than 8 GB?)";
+    return {{"supported", why.empty()},
+            {"reason", why},
+            {"wanted", !file_exists(g_paths.data + "/root-rw")},
+            {"read_only", root_mounted_ro()}};
+}
+
+std::string set_root_mode(bool read_only) {
+    json m = root_mode();
+    if (read_only && !jget<bool>(m, "supported", false)) return jget<std::string>(m, "reason", "not supported");
+    std::string marker = g_paths.data + "/root-rw";
+    if (read_only) unlink(marker.c_str());
+    else if (!write_file(marker, "1")) return "cannot store the setting";
+    int st = -1;
+    std::string out = run_cmd("sh '" + g_paths.app + "/service.sh' rootmode 2>&1", &st);
+    if (st != 0) return "could not switch: " + trim(out);
+    LOGW(TAG, "system partition is now %s", root_mounted_ro() ? "read-only" : "writable");
     return "";
 }
 

@@ -3,6 +3,7 @@
 #   mkdir -p /userdata/pcinst && gunzip -c picocam-*.tar.gz | tar -x -C /userdata/pcinst && sh /userdata/pcinst/install.sh
 # Options:
 #   --no-models   do not install the bundled demo models (saves ~12 MB of flash; upload your own in AI > Models)
+#   --no-reboot   do not restart at the end, even when the SD card layout needs it (restart later yourself)
 #   --help
 # Works on Luckfox Pico, Mini, Plus, Pro, Max, Ultra and Zero (RV1103 / RV1106) with SPI NAND, eMMC or SD boot.
 set -e
@@ -11,10 +12,12 @@ DIR=/oem/picocam
 DATA=/userdata/picocam
 LAUNCH=/oem/usr/bin/RkLunch.sh
 WITH_MODELS=1
+REBOOT=1
 for a in "$@"; do
 	case "$a" in
 	--no-models) WITH_MODELS=0 ;;
-	-h | --help) sed -n '2,8p' "$0"; exit 0 ;;
+	--no-reboot) REBOOT=0 ;;
+	-h | --help) sed -n '2,9p' "$0"; exit 0 ;;
 	*) echo "unknown option $a"; exit 1 ;;
 	esac
 done
@@ -39,6 +42,8 @@ if grep -qi ubuntu /etc/os-release 2>/dev/null; then
 fi
 [ -d /oem ] || die "/oem not found: this does not look like a Luckfox Buildroot image. Flash the Buildroot image first: docs/INSTALL.md, step 1"
 [ -d /userdata ] || die "/userdata not found: this does not look like a Luckfox buildroot image"
+# an earlier PicoCam keeps the system partition read-only: open it for the install (PicoCam closes it again at start)
+[ -f /etc/picocam.ro ] && mount -o remount,rw / 2>/dev/null
 touch /oem/.pc_rw 2>/dev/null && rm -f /oem/.pc_rw || die "/oem is read-only. Remount it read-write (mount -o remount,rw /oem) and retry"
 MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
 RAM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
@@ -136,6 +141,29 @@ sync
 say "installed $(cat $DIR/manifest.json)"
 killall -q rkipc gdb 2>/dev/null || true
 setsid sh $DIR/service.sh start </dev/null >/dev/null 2>&1
+
+# ---- 7. SD card boot: PicoCam adds a media partition for recordings in the unused part of the card at its first start;
+# it exists after a restart, and then the system partition becomes read-only (power-cut safe)
+if grep -q storagemedia=sd /proc/cmdline && ! grep -q '(media)' /proc/cmdline; then
+	for i in $(seq 1 30); do
+		grep -qE "card: .*(media partition|fills the whole card)" /tmp/picocam.log 2>/dev/null && break
+		sleep 1
+	done
+	if grep -q "card: .*media partition" /tmp/picocam.log 2>/dev/null; then
+		echo "== the unused part of the SD card becomes the recordings partition, and the system partition read-only,"
+		echo "   after one restart."
+		if [ $REBOOT = 1 ]; then
+			echo "== restarting in 5 s (the camera is back in about a minute)"
+			sleep 5
+			reboot
+			exit 0
+		fi
+		echo "   Restart when convenient: reboot"
+	elif grep -q "card: .*fills the whole card" /tmp/picocam.log 2>/dev/null; then
+		echo "== note: the system partition fills the whole SD card, so recordings share it and it cannot be read-only."
+		echo "   Re-flash the SD card with the Luckfox image and install again for the power-cut safe layout (docs/INSTALL.md)."
+	fi
+fi
 sleep 2
 echo "== open the web page and set the admin password (first start takes up to a minute):"
 for i in eth0 usb0 wlan0; do
