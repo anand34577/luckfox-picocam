@@ -31,6 +31,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "core/board.h"
 #include "core/log.h"
@@ -127,24 +128,34 @@ void feed_frame(const uint8_t *y, int w, int h, int stride) {
                 if (nb < 16) boxes[nb++] = b;
     }
     uint32_t hist[64] = {0}, hr[64] = {0}, n = 0, nr = 0;
-    // every 4th pixel of every 4th row: ~32k samples at 960x540, well under 1 ms
+    // every 4th pixel of every 4th row: ~32k samples at 960x540. The grid cell of each sampled column is looked up,
+    // not divided out per sample (two divisions per sample made this pass ~8 ms on the A7).
+    const int ns = (w - 2 + 3) / 4;
+    std::vector<uint8_t> col64(ns), col15(ns);
+    for (int i = 0, c = 2; i < ns; ++i, c += 4) col64[i] = (uint8_t)(c * 64 / w), col15[i] = (uint8_t)(c * 15 / w);
+    // subject boxes as sample-column ranges per row: an integer compare instead of float tests per box
+    int bx1[16], bx2[16];
+    for (int k = 0; k < nb; ++k) bx1[k] = (int)(boxes[k][0] * w), bx2[k] = (int)(boxes[k][2] * w);
     for (int r = 2; r < h; r += 4) {
-        const uint8_t *p = y + (size_t)r * stride;
-        int my = r * 36 / h, gy = r * 15 / h;
+        const uint8_t *p = y + (size_t)r * stride + 2;
+        const uint8_t *mrow = mm + (r * 36 / h) * 64, *wrow = w15 + (r * 15 / h) * 15;
         float fy = (float)r / h;
-        for (int c = 2; c < w; c += 4) {
-            int Y = p[c];
-            if (nb) {
-                float fx = (float)c / w;
-                for (int k = 0; k < nb; ++k)
-                    if (fx >= boxes[k][0] && fx <= boxes[k][2] && fy >= boxes[k][1] && fy <= boxes[k][3]) {
+        int live[16], nl = 0;
+        for (int k = 0; k < nb; ++k)
+            if (fy >= boxes[k][1] && fy <= boxes[k][3]) live[nl++] = k;
+        for (int i = 0; i < ns; ++i) {
+            int Y = p[i * 4];
+            if (nl) {
+                int c = 2 + i * 4;
+                for (int j = 0; j < nl; ++j)
+                    if (c >= bx1[live[j]] && c <= bx2[live[j]]) {
                         ++hr[Y >> 2];
                         ++nr;
                         break;
                     }
             }
-            if (mm[my * 64 + c * 64 / w]) continue;  // privacy mask: not part of the scene
-            uint32_t wt = w15[gy * 15 + c * 15 / w];
+            if (mrow[col64[i]]) continue;  // privacy mask: not part of the scene
+            uint32_t wt = wrow[col15[i]];
             hist[Y >> 2] += wt;
             n += wt;
         }

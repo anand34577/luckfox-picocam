@@ -65,3 +65,11 @@ void DmaBuf::end_cpu_write() {
     dma_buf_sync s = {DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE};
     ioctl(fd_, DMA_BUF_IOCTL_SYNC, &s);
 }
+
+void DmaBuf::cpu_read_sync() {
+    if (fd_ < 0) return;
+    dma_buf_sync s = {DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+    ioctl(fd_, DMA_BUF_IOCTL_SYNC, &s);
+    s.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(fd_, DMA_BUF_IOCTL_SYNC, &s);
+}

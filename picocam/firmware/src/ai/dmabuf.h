@@ -23,6 +23,8 @@ public:
     // the mapping is cached: bracket CPU writes so the RGA/NPU see them in memory
     void begin_cpu_write();
     void end_cpu_write();
+    // after a device (the RGA) wrote it: drop the CPU's cached copy so CPU reads see the new contents
+    void cpu_read_sync();
 
 private:
     int fd_ = -1;

@@ -994,9 +994,23 @@ static bool frame_hook(video::FrameView &v) {
             g_last_take = t;
             size_t sz = (size_t)v.stride * v.h * 3 / 2;
             if (g_fdma.fd() >= 0 && sz <= g_fdma.size()) {
-                g_fdma.begin_cpu_write();
-                memcpy(g_fdma.data(), v.nv12, sz);
-                g_fdma.end_cpu_write();
+                // the RGA copies capture buffer -> AI buffer (both media memory); the CPU only if that fails
+                if (rga_copy_nv12(v.fd, g_fdma.fd(), v.stride, v.h)) {
+                    g_fdma.cpu_read_sync();
+                    static bool checked = false;
+                    if (!checked) {  // first copy: compare sample rows with the CPU's view of the capture buffer
+                        checked = true;
+                        bool same = true;
+                        for (int r = 0; r < v.h * 3 / 2 && same; r += 37)
+                            same = !memcmp(g_fdma.data() + (size_t)r * v.stride, v.nv12 + (size_t)r * v.stride, v.w);
+                        if (!same) rga_copy_disable("the copy differs from the picture");
+                        else LOGI("ai", "AI frames are copied by the RGA (checked against the picture)");
+                    }
+                } else {
+                    g_fdma.begin_cpu_write();
+                    memcpy(g_fdma.data(), v.nv12, sz);
+                    g_fdma.end_cpu_write();
+                }
                 g_frame.nv12 = g_fdma.data();
                 g_frame.fd = g_fdma.fd();
             } else {

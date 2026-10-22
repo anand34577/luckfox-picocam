@@ -19,6 +19,9 @@ static int64_t g_rga_runs = 0, g_cpu_runs = 0;
 static std::string g_rga_note;
 static std::atomic<bool> g_rga_frames{false};  // the AI frames are in media memory (the only memory the RGA can read)
 static std::string g_frames_note;
+static std::atomic<int> g_copy_fail{0};     // consecutive RGA frame-copy failures; after 3 the CPU copies
+static std::atomic<bool> g_copy_rga{false};  // the last AI frame was copied by the RGA
+static double g_copy_ms = 0;
 
 void npu_set_preprocess(const std::string &mode) { g_pre_cpu = mode == "cpu"; }
 
@@ -45,6 +48,8 @@ json npu_stats() {
             {"preprocess_ms", std::round(g_pre_ms * 100.0) / 100.0},
             {"inference_ms", std::round(g_npu_ms * 100.0) / 100.0},
             {"rga_share_pct", all ? (int)(g_rga_runs * 100 / all) : 0},
+            {"frame_copy", g_pre_cpu || !g_rga_frames ? "cpu" : g_copy_rga ? "rga" : "cpu (rga copy unavailable)"},
+            {"frame_copy_ms", std::round(g_copy_ms * 100.0) / 100.0},
             {"note", g_rga_note.empty() ? g_frames_note : g_rga_note}};
 }
 
@@ -280,6 +285,26 @@ Letterbox NpuModel::set_input(const Frame &f, RectF roi, bool keep_aspect, bool 
     }
     note_time(&g_pre_ms, (now_us() - t0) / 1000.0);
     return lb;
+}
+
+bool rga_copy_nv12(int src_fd, int dst_fd, int stride, int h) {
+    if (src_fd < 0 || dst_fd < 0 || g_copy_fail >= 3) return g_copy_rga = false;
+    int64_t t0 = now_us();
+    rga_buffer_t src = wrapbuffer_fd(src_fd, stride, h, RK_FORMAT_YCbCr_420_SP, stride, h);
+    rga_buffer_t dst = wrapbuffer_fd(dst_fd, stride, h, RK_FORMAT_YCbCr_420_SP, stride, h);
+    if (imcopy(src, dst) != IM_STATUS_SUCCESS) {
+        if (++g_copy_fail == 3) LOGW("ai", "RGA frame copy keeps failing: the CPU copies the AI frames");
+        return g_copy_rga = false;
+    }
+    g_copy_fail = 0;
+    note_time(&g_copy_ms, (now_us() - t0) / 1000.0);
+    return g_copy_rga = true;
+}
+
+void rga_copy_disable(const char *why) {
+    g_copy_fail = 3;
+    g_copy_rga = false;
+    LOGW("ai", "RGA frame copy off: %s", why);
 }
 
 bool npu_share_internal(std::vector<NpuModel *> models) {

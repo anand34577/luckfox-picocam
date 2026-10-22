@@ -425,6 +425,7 @@ static void sub_loop() {
         v.h = f.stVFrame.u32Height;
         v.stride = f.stVFrame.u32VirWidth ? f.stVFrame.u32VirWidth : v.w;
         v.pts_us = (int64_t)f.stVFrame.u64PTS;
+        v.fd = RK_MPI_MB_Handle2Fd(blk);
         RK_MPI_SYS_MmzFlushCache(blk, RK_TRUE);  // CPU reads (invalidate)
         bool dirty = false;
         isp::feed_frame(v.nv12, v.w, v.h, v.stride);
