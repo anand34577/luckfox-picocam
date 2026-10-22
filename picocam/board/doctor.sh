@@ -31,7 +31,7 @@ esac
 ok() { echo "  [ok]   $*"; }
 bad() { echo "  [FAIL] $*"; PROBLEMS=$((PROBLEMS + 1)); }
 warn() { echo "  [warn] $*"; }
-free_mb() { df -k "$1" 2>/dev/null | awk 'NR>1 {a=$4} END {printf "%d", a/1024}'; }
+free_mb() { df -k "$1" 2>/dev/null | awk 'NR>1 && NF>=3 {a=$(NF-2)} END {printf "%d", a/1024}'; }
 PROBLEMS=0
 
 echo "PicoCam doctor"
