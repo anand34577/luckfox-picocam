@@ -301,6 +301,14 @@ void register_routes() {
         if (jget<bool>(b, "reboot", false)) sys::reboot(2000);
         res.send_json(sys::media_memory());
     });
+    g_http.route("GET", "/api/system/root-mode", auth::OPERATOR, [](HttpRequest &, HttpResponse &res) { res.send_json(sys::root_mode()); });
+    g_http.route("POST", "/api/system/root-mode", auth::ADMIN, [](HttpRequest &req, HttpResponse &res) {
+        bool ro = jget<bool>(req.json_body(), "read_only", true);
+        std::string err = sys::set_root_mode(ro);
+        if (!err.empty()) return res.error(400, err);
+        audit::record(req.user, req.peer, "root_mode", ro ? "read-only" : "writable");
+        res.send_json(sys::root_mode());
+    });
     g_http.route("GET", "/api/system/logs", auth::OPERATOR, [](HttpRequest &req, HttpResponse &res) {
         size_t n = (size_t)std::max(1, std::min(400, atoi(req.param("n", "200").c_str())));
         json out = json::array();
@@ -493,6 +501,7 @@ void register_routes() {
         write_file(g_paths.data + "/update-pending", m.value("version", "?"));
         unlink((g_paths.data + "/rolled-back").c_str());
         // make sure the boot stub is the one that runs service.sh (older installs had the whole supervisor in it)
+        sys::RootWrite rw;
         run_cmd("[ -f '" + g_paths.app + "/S95picocam' ] && ! grep -q service.sh /etc/init.d/S95picocam && tr -d '\\r' < '" +
                 g_paths.app + "/S95picocam' > /etc/init.d/S95picocam && chmod +x /etc/init.d/S95picocam; true");
         sync();

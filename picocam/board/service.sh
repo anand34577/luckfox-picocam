@@ -25,6 +25,75 @@ apply_services() {
 	return 0
 }
 
+# ---- system partition setup, done at every start but writing only when something is missing
+# - vendor daemons PicoCam does not need: ntpd (PicoCam keeps the clock itself; ~1 MB of RAM) and telnetd (root login in
+#   plain text). Renamed, not deleted, so uninstall.sh can put them back.
+# - the vendor udev rule mounts every ext4 partition of an SD card at /mnt/sdcard, the system partition included (a
+#   second, writable mount). PicoCam mounts cards itself, so the rule is renamed (udev only reads *.rules). This eudev
+#   build never reads /etc/udev/rules.d, so an override there would not work.
+# - read-only system partition (SD/eMMC boot): the kernel mounts it read-only and the vendor inittab remounts it
+#   writable; a hook skips that while /etc/picocam.ro exists, so a power cut can never damage the OS. Needs the
+#   recordings elsewhere: on SD boot the media partition PicoCam adds. $DATA/root-rw = the user switched it off.
+UDEV_RULE=/lib/udev/rules.d/61-sd-cards-auto-mount.rules
+ROOT_HOOK=/etc/picocam-root.sh
+
+root_is_ro() { awk '$2 == "/" {print $4}' /proc/mounts | grep -qE '^ro(,|$)'; }
+
+root_ro_wanted() {
+	grep -qE 'storagemedia=(sd|emmc)' /proc/cmdline || return 1
+	grep -q 'storagemedia=sd' /proc/cmdline && ! grep -q '(media)' /proc/cmdline && return 1
+	[ ! -f $DATA/root-rw ]
+}
+
+root_setup_needed() {
+	[ -f /etc/init.d/S49ntp ] || [ -f /etc/init.d/S50telnet ] && return 0
+	grep -qE 'storagemedia=(sd|emmc)' /proc/cmdline || return 1
+	[ -f $UDEV_RULE ] || [ ! -f $ROOT_HOOK ] && return 0
+	grep -q '^::sysinit:/bin/mount -o remount,rw /$' /etc/inittab && return 0
+	# the marker must match the wish
+	if root_ro_wanted; then [ ! -f /etc/picocam.ro ]; else [ -f /etc/picocam.ro ]; fi
+}
+
+rootmode() {
+	mount -o remount,noatime /oem 2>/dev/null
+	mount -o remount,noatime /userdata 2>/dev/null
+	if root_setup_needed; then
+		root_is_ro && mount -o remount,rw /
+		for s in S49ntp S50telnet; do
+			[ -f /etc/init.d/$s ] && mv -f /etc/init.d/$s /etc/init.d/off.$s
+		done
+		if grep -qE 'storagemedia=(sd|emmc)' /proc/cmdline; then
+			[ -f $UDEV_RULE ] && mv -f $UDEV_RULE $UDEV_RULE.picocam-off
+			rm -f /etc/udev/rules.d/61-sd-cards-auto-mount.rules  # an earlier attempt that this udev ignores
+			[ -f $ROOT_HOOK ] || printf '#!/bin/sh\n# PicoCam: the system partition stays read-only while /etc/picocam.ro exists\n[ -f /etc/picocam.ro ] || exec /bin/mount -o remount,rw /\n' > $ROOT_HOOK
+			if grep -q '^::sysinit:/bin/mount -o remount,rw /$' /etc/inittab; then
+				[ -f /etc/inittab.picocam-orig ] || cp /etc/inittab /etc/inittab.picocam-orig
+				sed "s#^::sysinit:/bin/mount -o remount,rw /\$#::sysinit:/bin/sh $ROOT_HOOK#" /etc/inittab > /etc/inittab.new && mv -f /etc/inittab.new /etc/inittab
+			fi
+			if root_ro_wanted; then touch /etc/picocam.ro; else rm -f /etc/picocam.ro; fi
+		fi
+		sync
+	fi
+	killall -q ntpd telnetd 2>/dev/null
+	# the vendor rule may already have mounted partitions of the system card at /mnt/sdcard (this boot, before the
+	# rename took effect): the system, oem or userdata partition there would be a second, writable mount
+	if grep -q 'storagemedia=sd' /proc/cmdline; then
+		for i in 1 2 3 4; do
+			d=$(awk '$2 == "/mnt/sdcard" {print $1}' /proc/mounts | tail -n 1)
+			case "$(grep -o 'PARTNAME=.*' /sys/class/block/${d#/dev/}/uevent 2>/dev/null)" in
+			PARTNAME=rootfs | PARTNAME=oem | PARTNAME=userdata) umount /mnt/sdcard 2>/dev/null || break ;;
+			*) break ;;
+			esac
+		done
+	fi
+	if root_ro_wanted; then
+		root_is_ro || { sync; mount -o remount,ro / 2>/dev/null || echo "--- system partition busy, read-only after the next restart" >> $LOG; }
+	else
+		root_is_ro && mount -o remount,rw /
+	fi
+	return 0
+}
+
 wait_media() {
 	# RkLunch (S21appinit) loads the camera/encoder kernel modules in the background
 	for i in $(seq 1 60); do
@@ -103,6 +172,7 @@ start)
 	# started twice (init script and the launcher hook): only one supervisor
 	if [ -f $PIDFILE ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then echo "picocam already running"; exit 0; fi
 	protect_ssh
+	rootmode
 	supervise </dev/null >/dev/null 2>&1 &
 	echo $! > $PIDFILE
 	echo "picocam started"
@@ -120,12 +190,17 @@ restart)
 	sh "$0" stop
 	sh "$0" start
 	;;
+rootmode)
+	# System > Maintenance switches the read-only system partition on or off
+	rootmode
+	root_is_ro && echo "system partition: read-only" || echo "system partition: writable"
+	;;
 status)
 	pidof picocam >/dev/null && echo "running (pid $(pidof picocam))" || echo "not running"
 	tail -n 5 $LOG 2>/dev/null
 	;;
 *)
-	echo "usage: $0 {start|stop|restart|status}"
+	echo "usage: $0 {start|stop|restart|status|rootmode}"
 	exit 1
 	;;
 esac

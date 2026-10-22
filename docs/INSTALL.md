@@ -68,7 +68,10 @@ If the tool never sees the board: try another USB port and cable, make sure the 
 1. Write the *SD card* image to the card. On Windows use **balenaEtcher** or Luckfox's SD tool; on Linux/macOS `balenaEtcher`
    or `dd`. This erases the card.
 2. Put the card in the board's slot **before** powering it, then power the board.
-3. With an SD-booted board the card is also the system disk. PicoCam then stores recordings in the free space on that card.
+3. With an SD-booted board the card is also the system disk. The Luckfox image uses only the first ~7 GB of it; PicoCam turns
+   the rest into a separate partition for recordings and makes the system partition read-only, so a power cut cannot damage
+   it. This happens by itself during the install (one automatic restart): see [Power-cut safe SD card](#power-cut-safe-sd-card).
+   Use a card of 8 GB or more, ideally a "High Endurance" one made for dashcams and cameras.
 
 ---
 
@@ -147,6 +150,10 @@ What happens: the script downloads the newest release, sends it to the board, an
 your board and the free space first, then installs, hooks into the boot process, and starts PicoCam. It ends by printing the web
 addresses. It is safe to run again at any time (that is also how you update).
 
+**SD card boot:** the first install ends with *"restarting in 5 s"*. That restart creates the recordings partition and switches
+the system partition to read-only; the camera is back after about a minute. Add `--no-reboot` to the installer to restart later
+yourself.
+
 **Board with little flash?** Add `--lite` (`-Lite` on Windows). That skips the 12 MB of demo AI models; add them later in the
 web UI or with `--models` ([Models](MODELS.md)). The installer also does this by itself when there is not enough room.
 
@@ -183,6 +190,43 @@ with VLC, Home Assistant, Frigate, an NVR or your own software.
   [latest release](https://github.com/anand34577/luckfox-picocam/releases/latest). The package is checked, the old version is kept, and
   if the new one keeps crashing the camera goes back to the old one by itself.
 - **From your PC:** run `deploy.sh` / `deploy.ps1` again. Settings, users and recordings are kept.
+
+## Power-cut safe SD card
+
+On boards that boot from a microSD card PicoCam sets the card up like this:
+
+| Partition | Size | Mounted | Written |
+|---|---|---|---|
+| system (rootfs) | 6 GB | `/`, **read-only** | never (only for a moment when you change the hostname, time zone or password) |
+| oem | 512 MB | `/oem` | only by firmware updates and model uploads |
+| userdata | 256 MB | `/userdata` | when you save settings (small files, written atomically) |
+| **media** | the rest of the card | `/mnt/sdcard` | recordings and event pictures |
+
+- **A power cut cannot damage the system:** nothing writes to it, and logs live in RAM.
+- **Recordings survive a power cut:** they are written as fragmented MP4, so at most the last few seconds are lost. The media
+  partition is checked and repaired at every start. If it still cannot be used, it is formatted again so the camera keeps
+  recording; the event is logged.
+- **The card lasts longer:** with recording off the card sees no writes at all. Recording is what wears a card. Use a "High
+  Endurance" card, and record on events or the sub stream to write 5-20 times less.
+- **Switch:** *System > Maintenance > Power-cut protection* turns the read-only system partition off and on (no restart needed).
+  For a manual change on the board, open it for a moment with `mount -o remount,rw /`. It goes back to read-only at the next
+  restart or when you run `sh /oem/picocam/service.sh rootmode`.
+
+How it works:
+
+- PicoCam adds `-(media)` to the partition list (`blkdevparts`) in the U-Boot environment. The checksum is verified, a backup
+  is kept in `/userdata/picocam/env.backup`, and the result is read back. If anything is unexpected, nothing is changed.
+- A one-line hook in `/etc/inittab` skips the vendor "remount the system writable" step while `/etc/picocam.ro` exists.
+- The vendor rule that mounts every partition of the card at `/mnt/sdcard` is switched off, because PicoCam mounts the card
+  itself. `uninstall.sh` puts all of this back.
+
+**The Storage page says "the system partition fills the whole card"?** That card was set up by an earlier PicoCam test build
+or a custom image. It works, but recordings share the system partition, so it cannot be read-only. To change it:
+
+1. *System > Maintenance > Download backup* (settings; passwords are not included).
+2. Flash the Luckfox SD image to the card again ([Booting from a microSD card](#booting-from-a-microsd-card)).
+3. Install PicoCam again ([Step 3](#step-3-install-picocam)). It restarts once by itself.
+4. Set the admin password, then *System > Maintenance > Restore from file*.
 
 ## Going back to the stock firmware
 

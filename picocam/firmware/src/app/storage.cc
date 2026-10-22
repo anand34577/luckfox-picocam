@@ -8,11 +8,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <thread>
 
 #include "core/board.h"
+#include "app/system.h"
 #include "core/log.h"
 #include "core/util.h"
 #include "media/mp4.h"
@@ -69,10 +71,86 @@ static std::string mounted_dev(const std::string &mp, std::string *fs = nullptr)
 
 static std::mutex g_det_mu;  // the recorder thread and the API both call detect()
 
+// the "media" partition PicoCam adds after the system partition on SD-booted boards (sys::card_layout), or ""
+static std::string media_partition() {
+    DIR *dir = opendir("/sys/class/block");
+    if (!dir) return "";
+    std::string found;
+    while (dirent *e = readdir(dir)) {
+        std::string ue;
+        if (strncmp(e->d_name, "mmcblk", 6) != 0 || !read_file(std::string("/sys/class/block/") + e->d_name + "/uevent", ue)) continue;
+        if (ue.find("PARTNAME=media\n") != std::string::npos) found = std::string("/dev/") + e->d_name;
+    }
+    closedir(dir);
+    return found;
+}
+
+static bool is_ext4(const std::string &dev) {
+    uint8_t sb[2];
+    FILE *fp = fopen(dev.c_str(), "rb");
+    if (!fp) return false;
+    bool ok = fseek(fp, 1024 + 56, SEEK_SET) == 0 && fread(sb, 1, 2, fp) == 2;  // superblock magic 0xef53
+    fclose(fp);
+    return ok && sb[0] == 0x53 && sb[1] == 0xef;
+}
+
+static bool mkfs_media(const std::string &dev) {
+    int st = -1;
+    // one inode per 256 KB: plenty for segments and event pictures, and a quicker format and check
+    std::string out = run_cmd("mkfs.ext4 -F -q -L media -m 0 -i 262144 -E lazy_itable_init=1 " + dev + " 2>&1", &st);
+    if (st != 0) LOGE(TAG, "formatting %s failed: %s", dev.c_str(), trim(out).c_str());
+    return st == 0;
+}
+
+// checks (a power cut can leave the journal to replay) and mounts the media partition at /mnt/sdcard; formats it the
+// first time. Returns "" or what went wrong.
+static std::string mount_media(const std::string &d) {
+    std::string cur = mounted_dev("/mnt/sdcard");
+    if (cur == d) return "";
+    if (!cur.empty()) run_cmd("umount /mnt/sdcard 2>/dev/null || umount -l /mnt/sdcard");
+    mkdirs("/mnt/sdcard");
+    int st = -1;
+    if (!is_ext4(d)) {
+        LOGW(TAG, "%s: new media partition, formatting it (ext4)", d.c_str());
+        if (!mkfs_media(d)) return "the media partition could not be formatted";
+    } else {
+        run_cmd("e2fsck -p " + d + " >/dev/null 2>&1", &st);
+        if (st >= 4) {
+            LOGW(TAG, "%s: file system errors after a power cut, repairing", d.c_str());
+            run_cmd("e2fsck -fy " + d + " >/dev/null 2>&1", &st);
+        }
+    }
+    run_cmd("mount -t ext4 -o noatime " + d + " /mnt/sdcard 2>&1", &st);
+    if (st != 0) {
+        // a camera that records again beats one that keeps a broken file system: start the partition afresh
+        LOGE(TAG, "%s cannot be mounted even after repair: formatting it, older recordings are lost", d.c_str());
+        if (!mkfs_media(d)) return "the media partition is damaged and could not be formatted";
+        run_cmd("mount -t ext4 -o noatime " + d + " /mnt/sdcard 2>&1", &st);
+        if (st != 0) return "the media partition cannot be mounted";
+    }
+    LOGI(TAG, "media partition %s mounted at /mnt/sdcard", d.c_str());
+    return "";
+}
+
 static void detect() {
     std::lock_guard<std::mutex> dl(g_det_mu);
     std::string root, kind = "none", dev, fs;
-    if (boot_from_sd()) {
+    std::string media = boot_from_sd() ? media_partition() : "";
+    if (!media.empty()) {
+        // recordings on their own partition of the system card: the system partition can stay read-only
+        kind = "media";
+        dev = media;
+        static int64_t failed_ms = 0;  // a card that cannot be mounted is retried every 5 minutes, not on every packet
+        std::string err = failed_ms && now_ms() - failed_ms < 300000 ? g_err : mount_media(media);
+        failed_ms = err.empty() ? 0 : failed_ms ? failed_ms : now_ms();
+        if (!err.empty()) {
+            std::lock_guard<std::mutex> lk(g_mu);
+            g_kind = kind, g_dev = dev, g_root.clear(), g_err = err;
+            return;
+        }
+        mounted_dev("/mnt/sdcard", &fs);
+        root = "/mnt/sdcard";
+    } else if (boot_from_sd()) {
         // the SD card is the system disk; its big root partition holds the recordings
         // (/mnt/sdcard is only the small userdata partition on these images)
         kind = "boot_sd";
@@ -391,8 +469,10 @@ json status() {
             {"current_file", g_cur_file.empty() ? "" : g_cur_file.substr(g_cur_file.find_last_of('/') + 1)},
             {"current_bytes", g_cur_bytes.load()},
             {"dropped_frames", g_dropped.load()},
-            {"can_format", g_kind == "sd" || g_kind == "sd_unmounted" || g_kind == "sd_ejected"},
-            {"can_eject", g_kind == "sd"}};
+            {"can_format", g_kind == "sd" || g_kind == "sd_unmounted" || g_kind == "sd_ejected" || g_kind == "media"},
+            {"can_eject", g_kind == "sd"},
+            {"card", g_kind == "boot_sd" || g_kind == "media" ? sys::card_layout() : json()},
+            {"root_mode", sys::root_mode()}};
 }
 
 // ---------------------------------------------------------------- API
@@ -460,15 +540,21 @@ void register_routes() {
             dev = g_dev;
             kind = g_kind;
         }
-        if (kind != "sd" && kind != "sd_unmounted" && kind != "sd_ejected") return res.error(400, "only a removable SD card can be formatted");
+        if (kind != "sd" && kind != "sd_unmounted" && kind != "sd_ejected" && kind != "media")
+            return res.error(400, "only a removable SD card or the media partition can be formatted");
+        if (kind == "media") fs = "ext4";  // the media partition is always ext4 (journal: power-cut safe)
         g_ejected = false;
         if (fs != "vfat" && fs != "ext4") return res.error(400, "fs must be vfat or ext4");
         g_settings.update("recording", {{"mode", "off"}});
         usleep(800 * 1000);
         run_cmd("umount /mnt/sdcard 2>/dev/null");
         int st = -1;
-        std::string out = run_cmd((fs == "ext4" ? "mkfs.ext4 -F -q -L PICOCAM " : "mkfs.vfat -n PICOCAM ") + dev + " 2>&1", &st);
-        if (st != 0) return res.error(500, "format failed: " + trim(out));
+        if (kind == "media") {
+            if (!mkfs_media(dev)) return res.error(500, "format failed (see the log)");
+        } else {
+            std::string out = run_cmd((fs == "ext4" ? "mkfs.ext4 -F -q -L PICOCAM " : "mkfs.vfat -n PICOCAM ") + dev + " 2>&1", &st);
+            if (st != 0) return res.error(500, "format failed: " + trim(out));
+        }
         detect();
         LOGW(TAG, "%s formatted as %s by %s", dev.c_str(), fs.c_str(), req.user.c_str());
         res.send_json(status());

@@ -105,6 +105,7 @@ static std::atomic<int> g_root_sync_state{0};  // 0 never, 1 ok, -1 failed
 
 bool sync_root_password(const std::string &password) {
     if (!jget<bool>(g_settings.get("system"), "root_sync", true)) return false;
+    RootWrite rw;  // /etc/shadow is on the system partition
     // the password goes through stdin, never through a shell command line
     FILE *p = popen("chpasswd 2>/dev/null", "w");
     if (!p) {

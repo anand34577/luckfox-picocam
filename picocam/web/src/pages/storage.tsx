@@ -81,9 +81,28 @@ export function StoragePage() {
         <Stat icon="storage" k="Storage" v={st?.available ? fmtBytes(st.free_bytes) : 'none'} unit={st?.available ? `free of ${fmtBytes(st.total_bytes)}` : ''} pct={st?.total_bytes ? (used / st.total_bytes) * 100 : undefined} />
         <Stat icon="rec" k="Recording" v={st?.recording ? 'Active' : 'Idle'} unit={st?.mode} />
         <Stat icon="video" k="Current file" v={st?.current_file ? fmtBytes(st.current_bytes) : '–'} unit={st?.current_file || ''} />
-        <Stat icon="info" k="Medium" v={st?.kind === 'boot_sd' ? 'SD (system)' : st?.kind === 'sd' ? 'SD card' : st?.kind === 'sd_unmounted' ? 'SD (unreadable)' : st?.kind === 'sd_ejected' ? 'SD (removed safely)' : 'Internal'} unit={st?.fs || ''} />
+        <Stat icon="info" k="Medium" v={st?.kind === 'media' ? 'SD (recordings partition)' : st?.kind === 'boot_sd' ? 'SD (system)' : st?.kind === 'sd' ? 'SD card' : st?.kind === 'sd_unmounted' ? 'SD (unreadable)' : st?.kind === 'sd_ejected' ? 'SD (removed safely)' : 'Internal'} unit={st?.fs || ''} />
       </div>
       {st?.error && <Callout kind="bad">{st.error}</Callout>}
+      {st?.card?.layout === 'pending' && (
+        <Callout>
+          {fmtBytes(st.card.unused_bytes)} of the SD card were left unused by the system image. After the next restart they become a separate partition for recordings and events, and the system partition becomes read-only (safe on power cuts).
+          {isAdmin() && <div class="row mt"><Btn onClick={async () => {
+            if (!(await confirmDialog('Restart now', 'The camera restarts (about a minute) and then sets up the recordings partition.', 'Restart'))) return;
+            try {
+              await api.post('/api/system/reboot');
+              toast('Restarting', 'ok');
+            } catch (e: any) {
+              toast(e.message, 'err');
+            }
+          }}>Restart now</Btn></div>}
+        </Callout>
+      )}
+      {st?.card?.layout === 'full_root' && (
+        <Callout kind="warn">
+          The system partition fills the whole SD card, so recordings share it with the operating system and it cannot be made read-only. For the power-cut safe layout: download a configuration backup (System &gt; Maintenance), re-flash the SD card with the Luckfox image, install PicoCam again and restore the backup. See docs/INSTALL.md, "Power-cut safe SD card".
+        </Callout>
+      )}
       {st?.dropped_frames > 0 && <Callout kind="warn">{st.dropped_frames} frames were dropped because the card was too slow. Use a Class 10 / U1 card or record the sub stream.</Callout>}
       <div class="grid g2">
         <Card title="Recording">
@@ -128,6 +147,7 @@ export function StoragePage() {
               <dt>Path</dt><dd class="mono">{st?.path || '–'}</dd>
               <dt>Filesystem</dt><dd>{st?.fs || '–'}</dd>
             </dl>
+            {st?.kind === 'media' && <div class="small dim mt">Recordings and events have their own partition on the system SD card (ext4, checked and repaired at every start). {st.root_mode?.read_only ? 'The system partition is read-only, so a power cut cannot damage it.' : ''}</div>}
             {st?.kind === 'boot_sd' && <div class="small dim mt">This board boots from the SD card; recordings use its free space. Formatting is disabled to protect the system.</div>}
             {(st?.can_eject || st?.kind === 'sd_ejected') && (
               <div class="row mt">
@@ -147,9 +167,9 @@ export function StoragePage() {
             )}
             {st?.can_format && isAdmin() && (
               <div class="row mt">
-                <Seg value={fs} onChange={setFs} options={[['vfat', 'FAT32 (PC-readable)'], ['ext4', 'ext4 (robust)']]} />
+                {st.kind !== 'media' && <Seg value={fs} onChange={setFs} options={[['vfat', 'FAT32 (PC-readable)'], ['ext4', 'ext4 (robust)']]} />}
                 <Btn kind="danger" onClick={async () => {
-                  if (!(await confirmDialog('Format SD card', 'All data on the SD card will be erased.', 'Format', true))) return;
+                  if (!(await confirmDialog(st.kind === 'media' ? 'Format recordings partition' : 'Format SD card', st.kind === 'media' ? 'All recordings and event pictures will be erased. The system is not touched.' : 'All data on the SD card will be erased.', 'Format', true))) return;
                   try {
                     setSt(await api.post('/api/storage/format', { fs }));
                     toast('SD card formatted', 'ok');

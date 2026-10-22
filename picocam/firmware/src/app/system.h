@@ -26,6 +26,17 @@ void reboot(int delay_ms = 1500);
 // (rk_dma_heap_cma=NNM); takes effect after a reboot. Only SD-booted boards expose the env partition.
 json media_memory();
 std::string set_media_memory(int mb);
+// SD-booted boards: the vendor image leaves most of a big card unpartitioned. At start-up a "media" partition is added
+// after the system partition (used after a restart); recordings go there and the system partition can be read-only.
+json card_layout();  // layout: none | media | pending (restart) | full_root (system partition fills the card), unused_bytes
+// Read-only system partition (SD/eMMC boot): power-cut safe. service.sh switches it; PicoCam opens it briefly to write.
+struct RootWrite {
+    RootWrite();
+    ~RootWrite();
+};
+bool write_system_file(const std::string &path, const std::string &data);  // skips the write when nothing changed
+json root_mode();                                                           // supported, reason, wanted, read_only
+std::string set_root_mode(bool read_only);
 // ---- self-healing and hardening (selfheal.cc)
 void loop_beat();  // the event loop calls this every second: proof that it is alive
 // Hardware watchdog (/dev/watchdog): fed only while the loop and the video path look healthy, so a hang resets the
