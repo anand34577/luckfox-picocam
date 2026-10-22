@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0
+
+- **Power-cut safe SD card.** On boards that boot from a microSD card the system partition is now read-only from power-on, so
+  pulling the power can no longer damage the operating system. Recordings and event pictures get their own partition in the
+  part of the card the Luckfox image left unused (it used only about 7 GB of a 32 GB card). That partition is checked and
+  repaired at every start. The installer sets this up by itself and restarts once. *System > Maintenance > Power-cut
+  protection* switches it off and on.
+- **Less wear on the card:** with recording off, the card now sees no writes at all. Settings are written only when you save
+  them, and logs stay in RAM.
+- **Cards set up by an earlier test build**, where the system partition fills the whole card, keep working as before. The
+  Storage page explains how to re-flash for the new layout (docs/INSTALL.md, "Power-cut safe SD card").
+- **Leaner and safer:** the vendor time daemon (PicoCam keeps the clock itself) and the telnet server (root login in plain
+  text) are switched off, which frees about 1 MB of RAM. `uninstall.sh` puts everything back.
+
 ## 1.4.1
 
 - **Fixes the board freezing with 1.4.0** (no blinking light, "USB device not recognized" on the PC). The RGA on the RV1103/RV1106 has
