@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0
+
+- **No more green picture or dead exposure after a settings change.** Saving Video & Audio settings, changing an AI model or a
+  scheduled AI profile restarts the video; the camera's colour and exposure engine now restarts with it in the order the chip needs,
+  so the picture comes back right instead of green with frozen exposure until a reboot.
+- **Self-healing picture:** if the picture still turns green, exposure stops reacting, or the image processor stops answering, the
+  camera restarts its video pipeline by itself (a few seconds' break, with growing pauses if it keeps happening) and records it in the
+  audit log. Image > status shows the picture health. A video pipeline that fails to start no longer stays dead: the watchdog resets
+  the board.
+- **Steadier Smart Exposure:** corrections are judged only on pictures taken after the previous one took effect, a passing car or
+  headlight no longer moves the whole scene, brightness is measured more finely, and the exposure boost no longer builds up at night
+  (mornings no longer start over-exposed). Auto anti-flicker also switches off in bright daylight.
+- **Manual white balance** no longer drifts with every slider move: the sliders scale the colours auto white balance had settled on.
+- **Less RTSP delay:** a viewer that falls behind skips to a fresh picture once about 0.4 s is waiting (counting what the network
+  stack holds too) instead of building up 2-3 s. For the lowest delay also set the player's own buffer low (VLC: Network caching 200 ms).
+- **Faster AI on the same NPU:** the picture is scaled and converted for the model by the RGA 2D engine instead of the CPU, checked
+  against the CPU result on first use, with automatic CPU fallback (`ai.preprocess`: `auto` or `cpu`). AI & Analytics shows the time
+  spent preparing the picture and on the NPU.
+- **On-screen text:** one switch turns off the timestamp and camera name together. Turning "Burn AI boxes into the sub stream" on or
+  off no longer restarts the video, and the web live view no longer draws a second set of boxes on a sub stream that has them burned in.
+- **Sign-in:** you are no longer logged out when the camera sets its clock (from NTP or the browser) after a reboot.
+
 ## 1.3.0
 
 - **EdgeAI server: an API for your own application.** Every face and vehicle detection comes with its pictures (whole frame, cropped
