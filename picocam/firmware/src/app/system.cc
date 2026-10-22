@@ -314,12 +314,20 @@ bool set_clock(int64_t ms) {
 void ntp_sync_now() { g_ntp_now = true; }
 
 // SNTP (RFC 4330) query; the board's ntpd is the full daemon and not suited for one-shot syncs
-static bool sntp_query(const std::string &server, int64_t *server_ms) {
+static bool sntp_query(const std::string &server, int64_t *server_ms, std::string *why) {
     addrinfo hints{}, *res = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(server.c_str(), "123", &hints, &res) != 0 || !res) return false;
+    if (getaddrinfo(server.c_str(), "123", &hints, &res) != 0 || !res) {
+        *why = "cannot resolve the name (no DNS server reachable?)";
+        return false;
+    }
+    *why = "no reply";
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        freeaddrinfo(res);
+        return false;
+    }
     timeval to{3, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof(to));
     uint8_t pkt[48] = {0x23};  // LI 0, version 4, mode 3 (client)
@@ -337,13 +345,20 @@ static bool sntp_query(const std::string &server, int64_t *server_ms) {
     return true;
 }
 
+static int g_ntp_fails = 0;  // consecutive failed syncs (retries back off, the warning is not repeated each time)
+
 static void ntp_sync(const std::string &server) {
     int64_t ms = 0;
-    for (int i = 0; i < 3 && !sntp_query(server, &ms); ++i) usleep(500 * 1000);
+    std::string why;
+    for (int i = 0; i < 3 && !sntp_query(server, &ms, &why); ++i) usleep(500 * 1000);
     if (!ms) {
-        LOGW(TAG, "NTP sync with %s failed", server.c_str());
+        static std::string last_why;
+        if (g_ntp_fails++ == 0 || why != last_why || g_ntp_fails % 12 == 0)
+            LOGW(TAG, "NTP sync with %s failed: %s (attempt %d)", server.c_str(), why.c_str(), g_ntp_fails);
+        last_why = why;
         return;
     }
+    g_ntp_fails = 0;
     if (std::llabs(ms - wall_ms()) > 500) set_clock(ms);
     g_ntp_ok_ms = wall_ms();
     LOGI(TAG, "time synced with %s", server.c_str());
@@ -362,7 +377,9 @@ static void ntp_loop() {
             g_ntp_now = false;
             ntp_sync(jget<std::string>(t, "ntp_server", "pool.ntp.org"));
             // retry soon while never synced (network may come up late)
-            next_ntp = now_ms() + (g_ntp_ok_ms ? jget<int>(t, "ntp_interval_min", 60) * 60000 : 120000);
+            // while failing: 2, 4, 8 .. 30 min (the network may come up late; a missing DNS server is not fixed by hammering)
+            int64_t retry = std::min<int64_t>(30 * 60000, 120000LL << std::min(4, std::max(0, g_ntp_fails - 1)));
+            next_ntp = now_ms() + (g_ntp_fails == 0 ? jget<int>(t, "ntp_interval_min", 60) * 60000 : retry);
         }
     }
 }
