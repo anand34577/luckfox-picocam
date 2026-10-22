@@ -23,7 +23,7 @@ ls "$SRC"/models/* >/dev/null 2>&1 || WITH_MODELS=0   # the lite package has non
 
 say() { echo "== $*"; }
 die() { echo "!! $*" >&2; exit 1; }
-free_kb() { df -k "$1" 2>/dev/null | awk 'NR>1 {a=$4} END {print a+0}'; }
+free_kb() { df -k "$1" 2>/dev/null | awk 'NR>1 && NF>=3 {a=$(NF-2)} END {print a+0}'; }
 size_kb() { du -sk "$@" 2>/dev/null | awk '{s+=$1} END {print s+0}'; }
 
 say "PicoCam install from $SRC"

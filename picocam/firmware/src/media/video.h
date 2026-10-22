@@ -17,6 +17,7 @@ struct FrameView {
     uint8_t *nv12;
     int w, h, stride;
     int64_t pts_us;  // monotonic capture time
+    int fd = -1;     // the capture buffer as a dma-buf (media memory: the RGA can read it), -1 if unknown
 };
 // Hooks run on the capture thread for every sub-stream frame, in registration order: keep them short.
 // Return true if the hook modified the pixels (overlay drawing), so caches are flushed before encoding.

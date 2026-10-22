@@ -64,9 +64,9 @@ SSH=(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=
 # Where to unpack on the board: /userdata if it has room (about twice the package), else RAM (/tmp), else stop with advice. No double
 # quotes in this script: it has to survive cmd.exe quoting on Windows too (deploy.ps1 sends the same text).
 NEED=$(( $(wc -c < "$PKG") / 1024 * 2 + 1024 ))
-STAGE="NEED=$NEED; D=/userdata/pcinst; F=\$(df -k /userdata | awk 'NR>1{a=\$4} END{print a+0}'); if [ \$F -lt \$NEED ]; then M=\$(awk '/MemAvailable/{print \$2}' /proc/meminfo); [ -z \$M ] && M=0; if [ \$M -gt \$((NEED+16000)) ]; then D=/tmp/pcinst; else echo '!! not enough free space to unpack the package. Use the lite package (--lite) or free some space'; exit 3; fi; fi; rm -rf \$D && mkdir -p \$D && gunzip -c | tar -x -C \$D"
+STAGE="NEED=$NEED; D=/userdata/pcinst; F=\$(df -k /userdata | awk 'NR>1 && NF>=3{a=\$(NF-2)} END{print a+0}'); if [ \$F -lt \$NEED ]; then M=\$(awk '/MemAvailable/{print \$2}' /proc/meminfo); [ -z \$M ] && M=0; if [ \$M -gt \$((NEED+16000)) ]; then D=/tmp/pcinst; else echo '!! not enough free space to unpack the package. Use the lite package (--lite) or free some space'; exit 3; fi; fi; rm -rf \$D && mkdir -p \$D && gunzip -c | tar -x -C \$D"
 if [ $MODELS = 1 ]; then
-	REMOTE='F=$(df -k /userdata | awk '"'"'NR>1{a=$4} END{print a+0}'"'"'); [ $F -gt 16000 ] || { echo '"'"'!! not enough free space in /userdata for the models (about 12 MB). Use an SD card, or upload just the models you need in the web UI (AI > Models)'"'"'; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo models installed'
+	REMOTE='F=$(df -k /userdata | awk '"'"'NR>1 && NF>=3{a=$(NF-2)} END{print a+0}'"'"'); [ $F -gt 16000 ] || { echo '"'"'!! not enough free space in /userdata for the models (about 12 MB). Use an SD card, or upload just the models you need in the web UI (AI > Models)'"'"'; exit 3; }; mkdir -p /userdata/picocam/models && gunzip -c | tar -x -C /userdata/picocam/models && echo models installed'
 else
 	REMOTE="$STAGE && sh \$D/install.sh; rc=\$?; rm -rf \$D; exit \$rc"
 fi

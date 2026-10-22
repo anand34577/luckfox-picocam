@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.1
+
+- **Fixes the board freezing with 1.4.0** (no blinking light, "USB device not recognized" on the PC). The RGA on the RV1103/RV1106 has
+  no MMU and can only read pictures in media memory; 1.4.0 handed it the AI's copy of the frame in ordinary memory, the kernel driver
+  failed and damaged kernel memory, and the board locked up shortly after start. The AI picture now goes into a media-memory buffer
+  the RGA can read, so RGA preprocessing works and takes about 1 ms (AI thread CPU about 2% instead of 12% on the CPU path). When no
+  media memory is free for it, the AI prepares the picture on the CPU, and AI & Analytics says why.
+- **Installer:** no longer reports "0 MB free" and stops when the storage name is long enough for `df` to wrap its line. The deploy
+  scripts and `doctor.sh` read free space the same way.
+- **Picture right away:** RTSP players, NVRs and the web live view now get their first picture in about 0.1 s instead of waiting up
+  to 2 s for the next keyframe. The sub stream's encoder refused the immediate keyframe request and the error went unnoticed.
+- **Less CPU per frame:** the RGA also copies the AI's frame out of the capture buffer (checked once, CPU fallback), and the exposure
+  statistics take a quarter of the time they did. The capture thread now needs about 3.5 ms of its 66 ms per frame.
+- **Dashboard:** NPU load is shown again (it was read from a place these boards don't have), with new tiles for the RGA, PicoCam's own
+  CPU share, the CPU clock and the capture thread. The load average is explained: about ten idle Rockchip driver threads always
+  count towards it, so it is not CPU use.
+- **Time sync without DNS:** when the camera cannot resolve the NTP server, the log says so once instead of every 2 minutes, and
+  retries slow down to every 30 minutes.
+
 ## 1.4.0
 
 - **No more green picture or dead exposure after a settings change.** Saving Video & Audio settings, changing an AI model or a

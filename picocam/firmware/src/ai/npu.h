@@ -64,5 +64,12 @@ bool npu_share_internal(std::vector<NpuModel *> models);
 
 // Preprocessing backend: "auto" (RGA, verified against the CPU result on first use, CPU fallback) or "cpu".
 void npu_set_preprocess(const std::string &mode);
+// Whether the AI frames are in media memory (dma-buf), the only memory the RGA can read. Without it every model
+// prepares its input on the CPU; `why` is shown in the AI status.
+void npu_rga_frames(bool available, const std::string &why = "");
+// Copies an NV12 picture (stride x h) between two dma-bufs on the RGA, so the capture thread spends no CPU on the AI's
+// frame copy. False if the RGA is unusable or the copy failed: the caller copies on the CPU instead.
+bool rga_copy_nv12(int src_fd, int dst_fd, int stride, int h);
+void rga_copy_disable(const char *why);  // the copy was checked and is wrong: CPU copies from now on
 // Where the AI time goes: preprocessing backend, average preprocessing / NPU inference time per model run.
 json npu_stats();
