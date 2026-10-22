@@ -62,7 +62,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // sqlite: one writer keeps things simple and safe
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + schemaIntegration + schemaAccess + schemaRules); err != nil {
 		return nil, err
 	}
 	return &Store{db: db}, nil

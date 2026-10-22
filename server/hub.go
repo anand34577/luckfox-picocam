@@ -14,9 +14,12 @@ import (
 type Hub struct {
 	mu      sync.Mutex
 	clients map[*websocket.Conn]chan []byte
+	only    map[*websocket.Conn]string // optional ?type= filter: only events of this type (device messages always pass)
 }
 
-func NewHub() *Hub { return &Hub{clients: map[*websocket.Conn]chan []byte{}} }
+func NewHub() *Hub {
+	return &Hub{clients: map[*websocket.Conn]chan []byte{}, only: map[*websocket.Conn]string{}}
+}
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
@@ -25,9 +28,16 @@ func (h *Hub) Broadcast(kind string, data any) {
 	if err != nil {
 		return
 	}
+	evType := ""
+	if e, ok := data.(*EventRow); ok && kind == "event" {
+		evType = e.Type
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, ch := range h.clients {
+	for c, ch := range h.clients {
+		if want := h.only[c]; want != "" && evType != "" && want != evType {
+			continue
+		}
 		select {
 		case ch <- b:
 		default: // slow client: drop rather than block ingest
@@ -43,10 +53,14 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan []byte, 64)
 	h.mu.Lock()
 	h.clients[c] = ch
+	if t := r.URL.Query().Get("type"); t == "face" || t == "vehicle" {
+		h.only[c] = t
+	}
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
 		delete(h.clients, c)
+		delete(h.only, c)
 		h.mu.Unlock()
 		c.Close()
 	}()

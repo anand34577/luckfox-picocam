@@ -1,0 +1,2446 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "EdgeAI Server API",
+    "version": "1.2.0",
+    "description": "Read faces, people, vehicles and number plates detected by your Luckfox Pico cameras. Every detection carries absolute image URLs (full frame, face crop, plate crop, vehicle crop). When the server runs with -api-key, send a key (the master key, or one made with POST /keys) as `Authorization: Bearer <key>` or `X-API-Key: <key>`; image URLs and the WebSocket also accept `?api_key=`. Image links in responses carry an expiring signature in that case, so img tags work without the key."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8090"
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    },
+    {
+      "apiKeyHeader": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Detections",
+      "description": "Every face / vehicle sighting with its images"
+    },
+    {
+      "name": "People",
+      "description": "Unique faces, grouped into persons, with optional names"
+    },
+    {
+      "name": "Vehicles",
+      "description": "Unique number plates with sighting history and watchlist labels"
+    },
+    {
+      "name": "Webhooks",
+      "description": "Push new detections to your server"
+    },
+    {
+      "name": "System",
+      "description": "Health, devices, docs"
+    },
+    {
+      "name": "Reports",
+      "description": "Summaries, attendance, timelines"
+    },
+    {
+      "name": "Alerts",
+      "description": "Channels, rules and alert history"
+    },
+    {
+      "name": "Admin",
+      "description": "Keys, retention, backup, audit (admin keys only)"
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Liveness check (no auth)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Server is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/detections": {
+      "get": {
+        "tags": [
+          "Detections"
+        ],
+        "summary": "List detections, newest first",
+        "description": "Combined feed of face and vehicle detections. Page with `cursor` = the previous response's `next_cursor`.",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "face",
+                "vehicle"
+              ]
+            }
+          },
+          {
+            "name": "device",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Camera device id"
+          },
+          {
+            "name": "person_id",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "named",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "true: only faces whose person has a name; false: only unnamed faces"
+          },
+          {
+            "name": "plate",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Plate text, case/spacing insensitive; substring match unless exact=true"
+          },
+          {
+            "name": "exact",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "plate_valid",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Plate matches a valid registration format"
+          },
+          {
+            "name": "vehicle_type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "car"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive start: epoch seconds, epoch ms or RFC 3339"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exclusive end, same formats"
+          },
+          {
+            "name": "min_quality",
+            "in": "query",
+            "schema": {
+              "type": "number"
+            },
+            "description": "Face quality score floor"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of detections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/detections/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Detections"
+        ],
+        "summary": "One detection",
+        "responses": {
+          "200": {
+            "description": "The detection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Detection"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Detections"
+        ],
+        "summary": "Delete a detection and its images",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/export/detections.csv": {
+      "get": {
+        "tags": [
+          "Detections"
+        ],
+        "summary": "Export detections as CSV",
+        "description": "Accepts the same filters as /detections (no cursor). `limit` defaults to 10000, max 100000.",
+        "responses": {
+          "200": {
+            "description": "CSV file",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/people": {
+      "get": {
+        "tags": [
+          "People"
+        ],
+        "summary": "List persons, most recently seen first",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Match on name or exact id"
+          },
+          {
+            "name": "named",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Persons (max 500)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/people/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "People"
+        ],
+        "summary": "One person with recent detections",
+        "parameters": [
+          {
+            "name": "recent",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The person",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/persons/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ],
+      "patch": {
+        "tags": [
+          "People"
+        ],
+        "summary": "Name (or rename) a person",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "Alice Johnson"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "People"
+        ],
+        "summary": "Delete a person (their detections stay, unlinked)",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/persons/{id}/merge/{from}": {
+      "post": {
+        "tags": [
+          "People"
+        ],
+        "summary": "Merge person `from` into person `id`",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "from",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "List unique plates, most recently seen first",
+        "description": "One row per plate that was read at least once. Vehicles without a readable plate appear only in /detections.",
+        "parameters": [
+          {
+            "name": "plate",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "vehicle_type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plate_valid",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "watchlist",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "block"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of vehicles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehiclePage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles/{plate}": {
+      "parameters": [
+        {
+          "name": "plate",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "example": "MH12AB1234"
+          },
+          "description": "Plate text; case, spaces and dashes are ignored"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "One vehicle with recent sightings",
+        "parameters": [
+          {
+            "name": "recent",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vehicle",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Set owner, label, watchlist or notes for a plate",
+        "description": "Works for any plate, even one not seen yet. Omitted fields are unchanged; send an empty string to clear one.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VehicleLabel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored label",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleLabel"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Remove the owner/label/watchlist record (sightings are kept)",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks": {
+      "get": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "List webhooks (secrets are never shown again)",
+        "responses": {
+          "200": {
+            "description": "Webhooks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Webhook"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Register a webhook",
+        "description": "New detections are POSTed to `url` as `{event:\"detection.created\", delivery_id, created_ms, data:<Detection>}` with header `X-EdgeAI-Signature: sha256=<hex HMAC-SHA256 of the raw body using the secret>`. Reply 2xx within 5 s; failures are retried after 1 s, 5 s and 25 s, then dropped.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "example": "https://myapp.example.com/hooks/edgeai"
+                  },
+                  "types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "face",
+                        "vehicle"
+                      ]
+                    },
+                    "description": "Empty or omitted = all"
+                  },
+                  "secret": {
+                    "type": "string",
+                    "description": "Generated if omitted"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created; the secret is returned only here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Webhook"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}": {
+      "delete": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Delete a webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Ok"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/{id}/test": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Send a signed `webhook.test` delivery",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receiver's answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "integer"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Cameras that have reported in",
+        "responses": {
+          "200": {
+            "description": "Devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{id}": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "One camera",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/stats": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Today's counters",
+        "responses": {
+          "200": {
+            "description": "Counters since local midnight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ws": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Live feed (WebSocket)",
+        "description": "Upgrade to WebSocket. Messages are `{\"kind\":\"event\",\"data\":<legacy event row>}` for each new detection and `{\"kind\":\"device\",\"data\":<Device>}` for heartbeats. Optional `?type=face|vehicle` limits event messages. Browsers cannot set headers on WebSockets, so pass `?api_key=` when auth is on. Prefer webhooks for server-to-server use; the event row here uses relative image paths (`frame_url`, `crop_url`, `extra_url`) — fetch the absolute form with GET /detections/{id}.",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "face",
+                "vehicle"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching protocols"
+          }
+        }
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Is a login needed? (no auth)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "{auth_required, authenticated, role}"
+          }
+        }
+      }
+    },
+    "/api/v1/login": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Exchange a key for a 12 h session cookie (HttpOnly, SameSite=Strict)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cookie set"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/logout": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Clear the session cookie",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/keys": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List API keys (never the secret)",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Create a key; the secret is returned once",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "read",
+                      "admin"
+                    ],
+                    "default": "read"
+                  },
+                  "expires_in_days": {
+                    "type": "integer",
+                    "description": "0 = never"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/keys/{id}": {
+      "delete": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Revoke a key (its sessions end too)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Who changed what (every write request)",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/settings/retention": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Automatic cleanup settings",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Set cleanup: days, protected_days, max_disk_gb (0 = off)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "days": {
+                    "type": "integer"
+                  },
+                  "protected_days": {
+                    "type": "integer"
+                  },
+                  "max_disk_gb": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/maintenance": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Disk usage, retention settings, last cleanup",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/maintenance/run": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Run the cleanup now",
+        "responses": {
+          "200": {
+            "description": "{events_deleted, persons_deleted, bytes_freed}"
+          }
+        }
+      }
+    },
+    "/api/v1/backup": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Zip with a consistent database copy (plus images with ?images=true)",
+        "parameters": [
+          {
+            "name": "images",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ZIP",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/channels": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Notification channels (secrets masked)",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Add a channel: telegram {bot_token,chat_id} | ntfy {url,token?} | email {host,port?,security?,username?,password?,from,to} | http {url,secret?}",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "config"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "telegram",
+                      "ntfy",
+                      "email",
+                      "http"
+                    ]
+                  },
+                  "config": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/channels/{id}": {
+      "patch": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Edit a channel (send a secret as ******** to keep it)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Delete a channel no rule uses",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/channels/{id}/test": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Send a test message",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ok, error?}"
+          }
+        }
+      }
+    },
+    "/api/v1/rules": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Alert rules",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Create a rule",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rule"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/rules/{id}": {
+      "put": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Replace a rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rule"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Delete a rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/rules/{id}/test": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Dry run: would this rule fire for that detection? Sends nothing",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "detection_id": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{matches, reason?, message}"
+          }
+        }
+      }
+    },
+    "/api/v1/alerts": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Alert history with delivery results",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/reports/summary": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "Totals, per-hour/day counts, vehicle types, cameras, top plates",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "YYYY-MM-DD (that local day), epoch or RFC 3339; default today"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive when YYYY-MM-DD; default end of the from day"
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "IANA zone, e.g. Asia/Kolkata; default server zone"
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/reports/attendance": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "First and last sighting per person or plate per local day",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "YYYY-MM-DD (that local day), epoch or RFC 3339; default today"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive when YYYY-MM-DD; default end of the from day"
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "IANA zone, e.g. Asia/Kolkata; default server zone"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "person",
+                "vehicle"
+              ]
+            }
+          },
+          {
+            "name": "named",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/people/{id}/timeline": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "Visits across cameras, in order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "gap",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 120
+            },
+            "description": "Seconds; sightings on one camera closer than this are one visit"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "YYYY-MM-DD (that local day), epoch or RFC 3339; default today"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive when YYYY-MM-DD; default end of the from day"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles/{plate}/timeline": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "Visits across cameras, in order",
+        "parameters": [
+          {
+            "name": "plate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gap",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 120
+            },
+            "description": "Seconds; sightings on one camera closer than this are one visit"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "YYYY-MM-DD (that local day), epoch or RFC 3339; default today"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Inclusive when YYYY-MM-DD; default end of the from day"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles/{plate}/similar": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Plates one or two characters away (likely misreads)",
+        "parameters": [
+          {
+            "name": "plate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "distance",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "maximum": 2
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles/{plate}/merge/{from}": {
+      "post": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Fold a misread plate into the right one",
+        "parameters": [
+          {
+            "name": "plate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/vehicles/{plate}/erase": {
+      "post": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Delete every sighting, picture and label of a plate",
+        "parameters": [
+          {
+            "name": "plate",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/people/{id}/erase": {
+      "post": {
+        "tags": [
+          "People"
+        ],
+        "summary": "Delete a person with every detection, picture and face sample",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "apiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    },
+    "responses": {
+      "Ok": {
+        "description": "Done",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean",
+                  "example": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "bad_request",
+                  "unauthorized",
+                  "not_found",
+                  "internal",
+                  "unavailable"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string"
+          },
+          "time_ms": {
+            "type": "integer"
+          },
+          "detections": {
+            "type": "integer"
+          },
+          "devices_online": {
+            "type": "integer"
+          },
+          "auth_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Images": {
+        "type": "object",
+        "description": "Absolute URLs; a field is omitted when that image does not exist.",
+        "properties": {
+          "full": {
+            "type": "string",
+            "example": "http://192.168.1.10:8090/images/2026-10-22/cam1_1792660000000_7_frame.jpg",
+            "description": "The whole camera frame"
+          },
+          "face": {
+            "type": "string",
+            "description": "Cropped face (face detections, person cover)"
+          },
+          "plate": {
+            "type": "string",
+            "description": "Cropped number plate (vehicle detections)"
+          },
+          "vehicle": {
+            "type": "string",
+            "description": "Cropped vehicle (vehicle detections)"
+          }
+        }
+      },
+      "PersonRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "description": "Empty until named"
+          },
+          "named": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Plate": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "example": "MH12AB1234"
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "confidence": {
+            "type": "number"
+          }
+        }
+      },
+      "VehicleRef": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "car"
+          },
+          "confidence": {
+            "type": "number"
+          },
+          "plate": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Plate"
+              }
+            ],
+            "nullable": true
+          },
+          "owner": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "watchlist": {
+            "type": "string",
+            "enum": [
+              "",
+              "allow",
+              "block"
+            ]
+          }
+        }
+      },
+      "Detection": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "face",
+              "vehicle"
+            ]
+          },
+          "ts_ms": {
+            "type": "integer",
+            "description": "Epoch milliseconds"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "integer"
+          },
+          "images": {
+            "$ref": "#/components/schemas/Images"
+          },
+          "person": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PersonRef"
+              }
+            ],
+            "description": "Face detections only"
+          },
+          "vehicle": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VehicleRef"
+              }
+            ],
+            "description": "Vehicle detections only"
+          },
+          "quality": {
+            "type": "number",
+            "description": "Face quality 0-1 (face detections)"
+          },
+          "meta": {
+            "type": "object",
+            "description": "Raw device metadata: boxes, landmarks, dwell_ms, ...",
+            "additionalProperties": true
+          }
+        }
+      },
+      "DetectionPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Detection"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "PersonView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "named": {
+            "type": "boolean"
+          },
+          "first_seen": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "type": "integer"
+          },
+          "first_seen_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visits": {
+            "type": "integer"
+          },
+          "cover_url": {
+            "type": "string",
+            "description": "Relative path of the best face crop (legacy)"
+          },
+          "images": {
+            "$ref": "#/components/schemas/Images"
+          }
+        }
+      },
+      "PersonPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonView"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "DeviceCount": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "detections": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "type": "integer"
+          }
+        }
+      },
+      "PersonDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PersonView"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "detections": {
+                "type": "integer"
+              },
+              "devices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DeviceCount"
+                }
+              },
+              "recent": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Detection"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "VehicleView": {
+        "type": "object",
+        "properties": {
+          "plate": {
+            "type": "string"
+          },
+          "plate_valid": {
+            "type": "boolean"
+          },
+          "vehicle_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sightings": {
+            "type": "integer"
+          },
+          "first_seen": {
+            "type": "integer"
+          },
+          "last_seen": {
+            "type": "integer"
+          },
+          "first_seen_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_seen_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "watchlist": {
+            "type": "string",
+            "enum": [
+              "",
+              "allow",
+              "block"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "images": {
+            "$ref": "#/components/schemas/Images"
+          },
+          "latest_detection_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "VehiclePage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VehicleView"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "VehicleDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VehicleView"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "devices": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/DeviceCount"
+                }
+              },
+              "recent": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Detection"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "VehicleLabel": {
+        "type": "object",
+        "properties": {
+          "owner": {
+            "type": "string",
+            "example": "Alice Johnson"
+          },
+          "label": {
+            "type": "string",
+            "example": "Delivery van"
+          },
+          "watchlist": {
+            "type": "string",
+            "enum": [
+              "",
+              "allow",
+              "block"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      },
+      "Webhook": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Only in the create response"
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "created_ms": {
+            "type": "integer"
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "anpr",
+              "face"
+            ]
+          },
+          "ip": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "integer"
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Stats": {
+        "type": "object",
+        "properties": {
+          "vehicles_today": {
+            "type": "integer"
+          },
+          "plates_today": {
+            "type": "integer"
+          },
+          "faces_today": {
+            "type": "integer"
+          },
+          "persons_total": {
+            "type": "integer"
+          },
+          "new_persons_today": {
+            "type": "integer"
+          },
+          "by_vehicle_type": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "Rule": {
+        "type": "object",
+        "required": [
+          "name",
+          "on",
+          "channels"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "on": {
+            "type": "string",
+            "enum": [
+              "detection",
+              "device_offline",
+              "device_online",
+              "device_health",
+              "server_disk"
+            ]
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "cooldown_s": {
+            "type": "integer",
+            "default": 60
+          },
+          "match": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "face",
+                  "vehicle"
+                ]
+              },
+              "device": {
+                "type": "string"
+              },
+              "watchlist": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "block"
+                ]
+              },
+              "face": {
+                "type": "string",
+                "enum": [
+                  "unknown",
+                  "named"
+                ]
+              },
+              "plate_pattern": {
+                "type": "string",
+                "example": "MH12*"
+              },
+              "plate_read": {
+                "type": "boolean"
+              },
+              "min_quality": {
+                "type": "number"
+              },
+              "hours": {
+                "type": "string",
+                "example": "22:00-06:00"
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "tz": {
+                "type": "string"
+              },
+              "metric": {
+                "type": "string",
+                "enum": [
+                  "temp_c",
+                  "cpu_pct",
+                  "npu_load_pct",
+                  "mem_avail_kb",
+                  "cma_pct"
+                ]
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  ">",
+                  "<"
+                ]
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
